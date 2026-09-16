@@ -247,8 +247,16 @@ export async function sendReportEmail(report: DailyReport, opts: ReportOptions =
   });
 
   const lang = opts.lang ?? DEFAULT_LANG;
-  const brand = opts.brand ?? DEFAULT_BRAND[lang];
-  const subject = `${brand} ${periodLabel(report, lang)}`;
+  const reportWord = DEFAULT_BRAND[lang]; // the localized "Report" word
+  const brand = opts.brand ?? reportWord;
+  // subject: 'Report "My Chain" for ...' (quote style by language);
+  // the sender name stays just the brand, without the word
+  const brandQuoted = opts.brand
+    ? (lang === 'ru' ? `«${opts.brand}»` : `"${opts.brand}"`)
+    : '';
+  const subject = brandQuoted
+    ? `${reportWord} ${brandQuoted} ${periodLabel(report, lang)}`
+    : `${reportWord} ${periodLabel(report, lang)}`;
   const html = buildHtml(report, lang);
   const sent: string[] = [];
   const failed: string[] = [];

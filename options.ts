@@ -11,8 +11,9 @@ export interface ReportOptions {
   daysBack?: number | undefined;
 
   /**
-   * Brand name used in the email subject and sender name
-   * (defaults to "Report" / «Отчёт» depending on the language).
+   * Brand name: the email sender name; in the subject it goes in
+   * quotes after the localized "Report" word — 'Report "My Chain" for ...'.
+   * Defaults to that word itself when no brand is given.
    */
   brand?: string | undefined;
 

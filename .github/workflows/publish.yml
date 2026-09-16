@@ -1,0 +1,35 @@
+# Publishes the package to npm and creates a GitHub release.
+# Trigger: pushing a version tag (v*) — one push, both places.
+# npm auth is trusted publishing (OIDC): registered once on npmjs.com in
+# Packages -> <package> -> Settings -> Trusted publishing; no tokens needed.
+
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # OIDC authentication for npm publish
+      contents: write # creating the GitHub release
+    steps:
+      - uses: actions/checkout@v6
+
+      # Node 24 bundles npm CLI 11.5.1+ — required for trusted publishing
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+
+      # npm ci runs the prepare hook, so dist/ is built from the tagged commit
+      - run: npm ci
+
+      - run: npm publish
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes

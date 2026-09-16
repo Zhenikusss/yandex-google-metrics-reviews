@@ -4,3 +4,4 @@ node_modules/
 dist/
 daily_report.json
 debug_fail_*.png
+TASKS.md

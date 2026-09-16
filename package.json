@@ -1,7 +1,7 @@
 {
   "name": "yandex-google-metrics-reviews",
   "version": "0.1.0",
-  "description": "Метрики и отзывы сети точек с Яндекс.Карт и Google Maps: сбор одним вызовом, JSON-отчёт и письмо",
+  "description": "Chain metrics and reviews from Yandex Maps and Google Maps — a daily report in one call (JSON + email)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

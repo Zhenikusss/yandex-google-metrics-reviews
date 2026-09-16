@@ -63,7 +63,7 @@ const reviews = await collectGoogleReviews({ daysBack: 3 });
 |---|---|---|
 | `daysBack` | how many days back to collect: 1 = yesterday | `1` |
 | `lang` | report email language: `'ru'` or `'en'` | `'en'` |
-| `brand` | name in the email subject and sender | `'Report'` / `'Отчёт'` (by language) |
+| `brand` | sender name; in the subject — in quotes after the word Report/Отчёт: `Report "My Chain" for 15.09.2026` | `'Report'` / `'Отчёт'` (by language) |
 
 ## Command usage
 
