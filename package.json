@@ -39,6 +39,10 @@
     "scraper"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zhenikusss/yandex-google-metrics-reviews.git"
+  },
   "dependencies": {
     "axios": "^1.19.0",
     "dotenv": "^17.4.2",
