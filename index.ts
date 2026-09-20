@@ -6,14 +6,20 @@
 * an email to MAIL_TO recipients (when mail is configured).
 *
 * As a library:
-*   import { runReport, collectReviews, getYandexStats,
-*            collectYandexReviews, getGoogleStats, collectGoogleReviews,
-*            sendReportEmail, sendReviewsEmail }
+*   import { runReport, collectMetrics, collectReviews,
+*            getYandexStats, collectYandexReviews, getGoogleStats,
+*            collectGoogleReviews, sendReportEmail, sendReviewsEmail,
+*            sendMetricsEmail }
 *     from 'yandex-google-metrics-reviews';
 *
 * collectReviews({ sendEmail: true }) collects reviews from both platforms
 * and sends ONE reviews-only email ("Reviews report ..." /
 * "Отчёт по отзывам ...").
+* collectMetrics({ daysBack: 7, sendEmail: true }) does the same for the
+* METRICS of both platforms (totals + per branch) into
+* metrics_report.json + email ("Metrics report ..." /
+* "Отчёт по метрикам ..."); called on Tuesdays with daysBack: 7 it
+* covers exactly the past Tuesday..Monday.
 *
 * As a command: npx yandex-google-metrics-reviews
 */
@@ -23,13 +29,15 @@ import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { getYandexStats } from './yandex-parser/metrika.js';
+import type { MetrikaDaily } from './yandex-parser/metrika.js';
 import { collectYandexReviews } from './yandex-parser/reviews.js';
 import type { ReviewsCollection } from './yandex-parser/reviews.js';
 import { getGoogleStats } from './google-parser/metrika.js';
+import type { GoogleStats } from './google-parser/metrika.js';
 import { collectGoogleReviews } from './google-parser/reviews.js';
 import type { GoogleReviewsCollection } from './google-parser/reviews.js';
-import { sendReportEmail, sendReviewsEmail } from './mailer.js';
-import type { ReportOptions, ReviewsOptions } from './options.js';
+import { sendReportEmail, sendReviewsEmail, sendMetricsEmail } from './mailer.js';
+import type { ReportOptions, ReviewsOptions, MetricsOptions } from './options.js';
 
 // ---- public API ----
 export { getYandexStats } from './yandex-parser/metrika.js';
@@ -44,8 +52,12 @@ export { sendReportEmail } from './mailer.js';
 export type { DailyReport } from './mailer.js';
 export { sendReviewsEmail } from './mailer.js';
 export type { ReviewsEmailSections } from './mailer.js';
+export { sendMetricsEmail } from './mailer.js';
+export type { MetricsEmailReport } from './mailer.js';
 export { DEFAULT_DAYS_BACK, DEFAULT_LANG, DEFAULT_BRAND } from './options.js';
-export type { ReportOptions, ReportLanguage, ReviewsOptions } from './options.js';
+export type { ReportOptions, ReportLanguage, ReviewsOptions, MetricsOptions } from './options.js';
+export type { YandexBranchMetrics } from './yandex-parser/metrika.js';
+export type { GoogleBranchMetrics } from './google-parser/metrika.js';
 
 /** Options for the full report run. */
 export interface RunReportOptions extends ReportOptions {
@@ -88,6 +100,61 @@ export async function collectReviews(opts: ReviewsOptions = {}): Promise<AllRevi
   }
 
   return { yandex, google };
+}
+
+/** The metrics collection of both platforms, Google null when it failed. */
+export interface MetricsCollection {
+  date: string;   // first day of the period
+  dateTo: string; // last day of the period
+  generatedAt: string;
+  yandex: MetrikaDaily;       // totals + branches
+  google: GoogleStats | null; // totals + branches; null — collection failed (logged)
+}
+
+/**
+ * Metrics of BOTH platforms in one call (no reviews): Yandex + Google
+ * chain totals and a per-branch breakdown with the same fields, for the
+ * daysBack period (yesterday by default). Writes metrics_report.json;
+ * with sendEmail: true also sends the metrics-only email
+ * ("Metrics report ..." / "Отчёт по метрикам ..."). A Google failure
+ * does not break the Yandex part.
+ *
+ * A weekly cadence needs no special options: run this on Tuesdays with
+ * daysBack: 7 — the period is (yesterday - 6) .. yesterday, i.e. exactly
+ * the past Tuesday..Monday.
+ */
+export async function collectMetrics(opts: MetricsOptions = {}): Promise<MetricsCollection> {
+  console.log('========================================');
+  console.log('Metrics collection');
+  console.log('========================================\n');
+
+  const yandex = await getYandexStats(opts);
+
+  let google: GoogleStats | null = null;
+  try {
+    google = await getGoogleStats(opts);
+  } catch (e) {
+    console.error(`[Google] Metrics not collected, the report will skip them: ${e instanceof Error ? e.message : e}\n`);
+  }
+
+  const report: MetricsCollection = {
+    date: yandex.date,
+    dateTo: yandex.dateTo,
+    generatedAt: new Date().toISOString(),
+    yandex,
+    google,
+  };
+
+  const file = opts.reportFile ?? path.join(process.cwd(), 'metrics_report.json');
+  fs.writeFileSync(file, JSON.stringify(report, null, 2), 'utf-8');
+  console.log(`Report saved: ${file}`);
+
+  // the email — only when asked (sendEmail: true), like collectReviews
+  if (opts.sendEmail) {
+    await sendMetricsEmail(report, { brand: opts.brand, lang: opts.lang });
+  }
+
+  return report;
 }
 
 /**

@@ -1,10 +1,12 @@
 /**
-* Google Business Profile stats (Performance API) — SUMMED across all
+* Google Business Profile stats (Performance API) for the daysBack period
+* (yesterday by default) — TOTALS plus a per-branch breakdown across all
 * locations of the business account: website clicks, calls, direction
-* requests and profile views for the daysBack period (yesterday by default).
+* requests and profile views.
 *
 * How it works: exchange the refresh token for an access token ->
-* list all account locations -> fetch metrics per location -> sum them up.
+* list all account locations -> fetch metrics per location -> sum the
+* totals and keep each location's row for the per-branch table.
 *
 * Auth comes from environment variables only (.env):
 *   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET — OAuth client from Google Cloud Console
@@ -14,9 +16,20 @@
 import * as dotenv from 'dotenv';
 import { DEFAULT_DAYS_BACK } from '../options.js';
 import type { ReportOptions } from '../options.js';
+import { loadBranchAliases, normalizeBranchName } from '../branches.js';
 import { getGoogleAccessToken, listGoogleLocations } from './auth.js';
+import type { GoogleLocation } from './auth.js';
 
 dotenv.config({ quiet: true });
+
+/** One location: the same fields as the account totals. */
+export interface GoogleBranchMetrics {
+  branch: string;
+  profileViews: number;
+  siteClicks: number;
+  calls: number;
+  directionRequests: number;
+}
 
 export interface GoogleStats {
   date: string;              // first day of the period
@@ -26,6 +39,8 @@ export interface GoogleStats {
   siteClicks: number;        // WEBSITE_CLICKS (sum)
   calls: number;             // CALL_CLICKS (sum)
   directionRequests: number; // BUSINESS_DIRECTION_REQUESTS (sum)
+  /** Per-branch breakdown of the same fields (most active first) */
+  branches: GoogleBranchMetrics[];
 }
 
 /** YYYY-MM-DD in local time */
@@ -43,12 +58,6 @@ function getReportDateRange(daysBack: number): { start: Date; end: Date } {
   const start = new Date(end);
   start.setDate(start.getDate() - (daysBack - 1));
   return { start, end };
-}
-
-/** IDs of all locations of the user's business accounts */
-async function listLocationIds(accessToken: string): Promise<string[]> {
-  const locations = await listGoogleLocations(accessToken);
-  return locations.map((l) => l.id);
 }
 
 /** Metrics of one location for the period (days without a value = zero activity) */
@@ -108,7 +117,8 @@ async function fetchLocationStats(
 }
 
 /**
- * Summed stats across ALL business account locations for the daysBack period.
+ * Stats across ALL business account locations for the period: totals plus
+ * a per-branch breakdown.
  * IMPORTANT: valid metric names of this API:
  *   WEBSITE_CLICKS, CALL_CLICKS, BUSINESS_DIRECTION_REQUESTS,
  *   BUSINESS_IMPRESSIONS_{DESKTOP,MOBILE}_{MAPS,SEARCH}
@@ -116,29 +126,39 @@ async function fetchLocationStats(
  */
 export async function getGoogleStats(opts: ReportOptions = {}): Promise<GoogleStats> {
   const accessToken = await getGoogleAccessToken();
-  const locationIds = await listLocationIds(accessToken);
+  const locations: GoogleLocation[] = await listGoogleLocations(accessToken);
   const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;
   const { start, end } = getReportDateRange(daysBack);
 
-  console.log(`[Google] Metrics for ${fmt(start)}..${fmt(end)} across ${locationIds.length} locations...`);
+  console.log(`[Google] Metrics for ${fmt(start)}..${fmt(end)} across ${locations.length} locations...`);
 
   const totals: GoogleStats = {
     date: fmt(start),
     dateTo: fmt(end),
-    locationsCount: locationIds.length,
+    locationsCount: locations.length,
     profileViews: 0,
     siteClicks: 0,
     calls: 0,
     directionRequests: 0,
+    branches: [],
   };
 
-  for (const id of locationIds) {
-    const s = await fetchLocationStats(accessToken, id, start, end);
+  const aliases = loadBranchAliases();
+  for (const loc of locations) {
+    const s = await fetchLocationStats(accessToken, loc.id, start, end);
     totals.profileViews += s.profileViews;
     totals.siteClicks += s.siteClicks;
     totals.calls += s.calls;
     totals.directionRequests += s.directionRequests;
+    totals.branches.push({
+      branch: normalizeBranchName(loc.address, loc.title, aliases),
+      profileViews: s.profileViews,
+      siteClicks: s.siteClicks,
+      calls: s.calls,
+      directionRequests: s.directionRequests,
+    });
   }
+  totals.branches.sort((a, b) => b.profileViews - a.profileViews);
 
   console.log(`[Google] Summed across ${totals.locationsCount} locations: profile=${totals.profileViews}, site=${totals.siteClicks}, calls=${totals.calls}, directions=${totals.directionRequests}`);
   return totals;

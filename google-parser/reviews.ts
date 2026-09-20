@@ -8,32 +8,13 @@
 */
 
 import * as dotenv from 'dotenv';
-import * as fs from 'fs';
-import * as path from 'path';
 import { pathToFileURL } from 'url';
 import { DEFAULT_DAYS_BACK } from '../options.js';
 import type { ReportOptions } from '../options.js';
+import { loadBranchAliases, normalizeBranchName } from '../branches.js';
 import { getGoogleAccessToken, listGoogleLocations } from './auth.js';
 
 dotenv.config({ quiet: true });
-
-/**
- * Google address -> canonical branch name mapping.
- * Read from branches.json in the USER'S CURRENT directory (key — a
- * substring of the Google address, value — the name in the report).
- * No file or no match — the address is simply cleaned
- * (street with house number, no city or postal code).
- */
-function loadBranchAliases(): Record<string, string> {
-  const file = path.join(process.cwd(), 'branches.json');
-  try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, string>;
-    return Object.fromEntries(Object.entries(raw).filter(([k]) => !k.startsWith('_')));
-  } catch {
-    console.warn('[Google] branches.json not found or invalid — branches will use auto names');
-    return {};
-  }
-}
 
 export interface ReviewRow {
   author: string;
@@ -56,16 +37,6 @@ export interface GoogleReviewsCollection {
 
 /** "FIVE"/"THREE" -> 5/3 */
 const STAR_MAP: Record<string, number> = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
-
-/** Google address -> branch name (branches.json, fallback — cleaned address) */
-function normalizeBranchName(address: string | null, fallback: string, aliases: Record<string, string>): string {
-  if (!address) return fallback;
-  const cleaned = address.replace(/[\uE000-\uF8FF\u200B-\u200D\uFEFF]/g, '').trim();
-  for (const [key, alias] of Object.entries(aliases)) {
-    if (cleaned.includes(key)) return alias;
-  }
-  return cleaned.split(',')[0]?.trim() || fallback;
-}
 
 /** Start of the day daysBack days ago — the lower bound of the reviews period */
 function getCutoffDate(daysBack: number): Date {

@@ -1,13 +1,15 @@
 /**
 * Yandex Metrika stats (Yandex Business landing events): routes, calls,
 * website clicks and profile shows for the daysBack period
-* (yesterday by default).
+* (yesterday by default) — TOTALS plus a per-branch breakdown
+* (the ym:s:vacuumOrganization dimension of the same events).
 */
 
 import axios from 'axios';
 import * as dotenv from 'dotenv';
 import { DEFAULT_DAYS_BACK } from '../options.js';
 import type { ReportOptions } from '../options.js';
+import { loadBranchAliases, cleanYandexOrgName } from '../branches.js';
 
 dotenv.config({ quiet: true });
 
@@ -24,6 +26,16 @@ interface MetrikaParams {
   [key: string]: string;
 }
 
+/** One chain branch: the same fields as the chain totals. */
+export interface YandexBranchMetrics {
+  branch: string;
+  orgId: string;
+  route: number;    // direction requests
+  call: number;     // call clicks
+  site: number;     // website clicks
+  showOrg: number;  // profile shows
+}
+
 export interface MetrikaDaily {
   date: string;   // first day of the period
   dateTo: string; // last day of the period (equals date for a single-day report)
@@ -32,6 +44,8 @@ export interface MetrikaDaily {
   site: number;    // website clicks
   showOrg: number; // profile shows (show-org + show_org)
   events: Record<string, number>; // all events as returned by Metrika
+  /** Per-branch breakdown of the same fields (most active first) */
+  branches: YandexBranchMetrics[];
 }
 
 /**
@@ -60,25 +74,55 @@ function getReportDateRange(daysBack: number): { start: string; end: string } {
   return { start: formatDate(start), end: formatDate(yesterday) };
 }
 
+/** showOrg is the sum of two spellings of the same event */
+function profileShows(events: Record<string, number>): number {
+  return (events['show-org'] ?? 0) + (events['show_org'] ?? 0);
+}
+
 /**
- * Flattens the Metrika response into per-event counters.
- * Profile shows are the sum of two events: show-org and show_org.
+ * Flattens the Metrika response into per-event totals AND a per-branch
+ * breakdown. Rows come as (event, organization) pairs; rows without an
+ * organization are counted into the totals only.
  */
 function normalizeMetrika(raw: any, date: string, dateTo: string): MetrikaDaily {
-  const events: Record<string, number> = {};
+  const totals: Record<string, number> = {};
+  const byOrg = new Map<string, { name: string; events: Record<string, number> }>();
+
   for (const row of raw?.data ?? []) {
-    const id: string | undefined = row?.dimensions?.[0]?.id;
+    const event: string | undefined = row?.dimensions?.[0]?.id;
+    if (!event) continue;
     const value = Number(row?.metrics?.[0] ?? 0);
-    if (id) events[id] = (events[id] ?? 0) + value;
+    totals[event] = (totals[event] ?? 0) + value;
+
+    const org = row?.dimensions?.[1]; // { id, name } of ym:s:vacuumOrganization
+    if (org?.id) {
+      const bucket = byOrg.get(org.id) ?? { name: org.name ?? org.id, events: {} as Record<string, number> };
+      bucket.events[event] = (bucket.events[event] ?? 0) + value;
+      byOrg.set(org.id, bucket);
+    }
   }
+
+  const aliases = loadBranchAliases();
+  const branches = [...byOrg.entries()]
+    .map(([orgId, b]) => ({
+      branch: cleanYandexOrgName(b.name, aliases),
+      orgId,
+      route: b.events['route'] ?? 0,
+      call: b.events['call'] ?? 0,
+      site: b.events['site'] ?? 0,
+      showOrg: profileShows(b.events),
+    }))
+    .sort((a, b) => b.showOrg - a.showOrg);
+
   return {
     date,
     dateTo,
-    route: events['route'] ?? 0,
-    call: events['call'] ?? 0,
-    site: events['site'] ?? 0,
-    showOrg: (events['show-org'] ?? 0) + (events['show_org'] ?? 0),
-    events,
+    route: totals['route'] ?? 0,
+    call: totals['call'] ?? 0,
+    site: totals['site'] ?? 0,
+    showOrg: profileShows(totals),
+    events: totals,
+    branches,
   };
 }
 
@@ -94,7 +138,8 @@ export async function getYandexStats(opts: ReportOptions = {}): Promise<MetrikaD
   const params: MetrikaParams = {
     id: YANDEX_COUNTER_ID,
     metrics: 'ym:s:vacuumevents',
-    dimensions: 'ym:s:vacuumEvent',
+    // the second dimension splits the events by chain branch
+    dimensions: 'ym:s:vacuumEvent,ym:s:vacuumOrganization',
     date1: start,
     date2: end,
     accuracy: 'full',

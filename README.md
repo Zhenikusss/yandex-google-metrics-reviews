@@ -9,6 +9,10 @@ A full period report (JSON + email) or individual sources as a library.
   call clicks, website clicks — summed across the chain
 - **Google Business Profile:** profile views, directions, calls,
   website clicks — summed across all account locations
+- **Per-branch metrics** of both platforms (Yandex via the
+  `ym:s:vacuumOrganization` dimension, Google per location)
+- **Metrics-only report** — `collectMetrics({ daysBack: 7, sendEmail: true })`:
+  chain totals + a per-branch table of both platforms in one email
 - **Reviews — Yandex Maps:** per branch (author, rating, date, text)
 - **Reviews — Google:** the same, via the official API
 - **Report email** to every recipient (a separate email each) —
@@ -35,6 +39,7 @@ npx playwright install chromium
 ```ts
 import {
   runReport,              // full run: all sources -> daily_report.json -> email
+  collectMetrics,         // METRICS of BOTH platforms + one metrics-only email
   collectReviews,         // reviews of BOTH platforms + one reviews-only email
   getYandexStats,         // Yandex Metrika metrics
   collectYandexReviews,   // Yandex Maps reviews
@@ -42,6 +47,7 @@ import {
   collectGoogleReviews,   // Google reviews
   sendReportEmail,        // email with a ready report
   sendReviewsEmail,       // reviews-only email
+  sendMetricsEmail,       // metrics-only email
 } from 'yandex-google-metrics-reviews';
 
 // everything at once, for yesterday (default)
@@ -54,6 +60,12 @@ const weekly = await runReport({
   lang: 'ru',
   brand: 'My Chain',
 });
+
+// METRICS ONLY (no reviews): chain totals + per-branch table of both
+// platforms -> metrics_report.json + one email
+await collectMetrics({ daysBack: 7, sendEmail: true, lang: 'ru', brand: 'My Chain' });
+// schedule it on Tuesdays: daysBack 7 = (yesterday - 6) .. yesterday,
+// i.e. exactly the past Tuesday..Monday
 
 // reviews of both platforms + ONE email with them together
 const all = await collectReviews({ daysBack: 1, sendEmail: true });
@@ -70,7 +82,11 @@ const reviews = await collectGoogleReviews({ daysBack: 3 });
 | `daysBack` | how many days back to collect: 1 = yesterday | `1` |
 | `lang` | report email language: `'ru'` or `'en'` | `'en'` |
 | `brand` | sender name; in the subject — in quotes after the word Report/Отчёт: `Report "My Chain" for 15.09.2026` | `'Report'` / `'Отчёт'` (by language) |
-| `sendEmail` | `collectReviews` only: send ONE reviews-only email with the Yandex and Google reviews together — subject `Reviews report "My Chain" for 15.09.2026` / `Отчёт по отзывам «My Chain» за 15.09.2026`, no metric cards; recipients and SMTP from `.env` | `false` (collect only) |
+| `sendEmail` | `collectReviews` / `collectMetrics`: send the combined email of both platforms after collecting (`runReport` always emails) | `false` (collect only) |
+| `reportFile` | where to write the report JSON (`runReport`, `collectMetrics`) | `daily_report.json` / `metrics_report.json` in the current directory |
+
+The metrics-only email subject is `Metrics report "My Chain" from 15.09.2026 to 21.09.2026` /
+`Отчёт по метрикам «My Chain» с 15.09.2026 по 21.09.2026` (single day: `for 19.09.2026` / `за 19.09.2026`).
 
 ## Command usage
 
@@ -84,16 +100,17 @@ directory and sends the email when mail is configured.
 ## Structure
 
 ```
-index.ts                    full run, combined reviews (collectReviews) + exports
-options.ts                  the shared daysBack option
-branches.json               branch names: Google address -> report name
-mailer.ts                   HTML email from the report
+index.ts                    full run, combined reviews + metrics report + exports
+options.ts                  the shared call options
+branches.ts                 branch names: platform address -> report name
+branches.json               branch names: Google/Yandex address -> report name
+mailer.ts                   HTML emails: full, reviews-only, metrics-only
 yandex-parser/
-  metrika.ts                Yandex Metrika metrics (API)
+  metrika.ts                Yandex Metrika metrics, totals + per branch (API)
   reviews.ts                Yandex Maps reviews (page scraping via Playwright)
 google-parser/
   auth.ts                   Google OAuth token + the account location list
-  metrika.ts                Google Business Profile metrics (Performance API)
+  metrika.ts                Google Business Profile metrics, totals + per branch
   reviews.ts                Google reviews (My Business API, batchGetReviews)
 ```
 
@@ -165,15 +182,22 @@ defaults — English, "Report").
 ### Branch names
 
 `branches.json` in your current directory (see `branches.example.json`):
-key — a substring of the Google address, value — the branch name in the
-report. No file or no match — the address is cleaned automatically
-(street with house number, no city, region or postal code).
+key — a substring of the platform address, value — the branch name in the
+report. The keys match Google addresses AND Yandex Metrika organization
+names (both the full "Region, City, street..." spelling and the street
+part), so one file names the branches of both platforms uniformly — add
+both spellings when they differ (e.g. "Строителей" and "Будаўнікоў").
+No file or no match — the address is cleaned automatically
+(Google: street with house number; Yandex: street with house number).
 
 ## Scheduling
 
-The library does not impose a scheduler: `runReport()` is a plain async
-function — run it from system cron, Task Scheduler, a CI pipeline or a
-cloud scheduler.
+The library does not impose a scheduler: `runReport()`,
+`collectMetrics()` and `collectReviews()` are plain async functions —
+run them from system cron, Task Scheduler, a CI pipeline or a cloud
+scheduler. All periods are relative to the run date: `daysBack: 7`
+covers (yesterday - 6) .. yesterday, so a Tuesday run of
+`collectMetrics({ daysBack: 7, sendEmail: true })` is exactly the past Tue..Mon week.
 
 ## License
 

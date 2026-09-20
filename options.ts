@@ -31,6 +31,19 @@ export interface ReviewsOptions extends ReportOptions {
   sendEmail?: boolean | undefined;
 }
 
+export interface MetricsOptions extends ReportOptions {
+  /**
+   * collectMetrics only: after collecting both platforms send ONE
+   * metrics-only email — chain totals + per-branch tables, no reviews
+   * (default false — collect only, no email). Recipients and SMTP
+   * come from .env, the language and brand from the sibling options.
+   */
+  sendEmail?: boolean | undefined;
+
+  /** Where to write metrics_report.json (defaults to the current directory) */
+  reportFile?: string | undefined;
+}
+
 /** Default value: a yesterday report. */
 export const DEFAULT_DAYS_BACK = 1;
 

@@ -3,5 +3,7 @@ node_modules/
 *.log
 dist/
 daily_report.json
+metrics_report.json
 debug_fail_*.png
 TASKS.md
+branches.json

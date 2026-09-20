@@ -57,6 +57,13 @@ export interface DailyReport {
 /** Email strings for the supported languages. */
 const LABELS: Record<ReportLanguage, {
   reviewsReportWord: string;
+  metricsReportWord: string;
+  byBranch: string;
+  branch: string;
+  colViews: string;
+  colRoutes: string;
+  colCalls: string;
+  colSite: string;
   yandex: string;
   profileViews: string;
   directions: string;
@@ -71,6 +78,13 @@ const LABELS: Record<ReportLanguage, {
 }> = {
   en: {
     reviewsReportWord: 'Reviews report',
+    metricsReportWord: 'Metrics report',
+    byBranch: 'by branch',
+    branch: 'Branch',
+    colViews: 'Views',
+    colRoutes: 'Routes',
+    colCalls: 'Calls',
+    colSite: 'Site',
     yandex: 'Yandex:',
     profileViews: 'Profile views',
     directions: 'Direction requests',
@@ -85,6 +99,13 @@ const LABELS: Record<ReportLanguage, {
   },
   ru: {
     reviewsReportWord: 'Отчёт по отзывам',
+    metricsReportWord: 'Отчёт по метрикам',
+    byBranch: 'по филиалам',
+    branch: 'Филиал',
+    colViews: 'Просмотры',
+    colRoutes: 'Маршруты',
+    colCalls: 'Звонки',
+    colSite: 'Сайт',
     yandex: 'Яндекс:',
     profileViews: 'Просмотров профиля',
     directions: 'Проложено маршрутов',
@@ -125,6 +146,35 @@ function ratingStars(rating: number | null): string {
   const full = '★'.repeat(Math.round(rating));
   const empty = '☆'.repeat(5 - Math.round(rating));
   return `${full}${empty} ${rating}`;
+}
+
+/** A row of metric cards (label + big number) — used by both email kinds */
+function metricCardsRow(cards: [string, number][]): string {
+  const card = (label: string, value: number): string => `
+    <td style="padding:8px;">
+      <div style="background:#f4f6fa;border-radius:10px;padding:16px;text-align:center;">
+        <div style="font-size:13px;color:#666;">${label}</div>
+        <div style="font-size:30px;font-weight:700;color:#1a1a2e;padding-top:4px;">${value}</div>
+      </div>
+    </td>`;
+  return `<table style="border-collapse:collapse;width:100%;"><tr>${cards.map(([lbl, v]) => card(lbl, v)).join('')}</tr></table>`;
+}
+
+/**
+ * Per-branch table: the branch name column plus one column per metric.
+ * Compact headers, zebra rows, names on one line — the full metric
+ * labels are on the totals cards right above the table.
+ */
+function buildBranchTable(header: string[], rows: (string | number)[][]): string {
+  const th = header
+    .map((h, i) => `<th style="padding:8px 10px;background:#eef1f6;font-size:12px;font-weight:600;color:#555;text-align:${i === 0 ? 'left' : 'center'};white-space:nowrap;">${escapeHtml(h)}</th>`)
+    .join('');
+  const body = rows
+    .map((r, ri) => `<tr${ri % 2 === 1 ? ' style="background:#f7f9fc;"' : ''}>${r
+      .map((cell, i) => `<td style="padding:8px 10px;border-bottom:1px solid #e5e8ee;${i === 0 ? 'text-align:left;color:#1a1a2e;white-space:nowrap;' : 'text-align:center;color:#333;white-space:nowrap;'}">${escapeHtml(String(cell))}</td>`)
+      .join('')}</tr>`)
+    .join('');
+  return `<table style="border-collapse:collapse;width:100%;font-size:13px;"><tr>${th}</tr>${body}</table>`;
 }
 
 /** Period label: single day -> "for 11.09.2026", range -> "from ... to ..." */
@@ -185,32 +235,22 @@ function buildHtml(report: DailyReport, lang: ReportLanguage): string {
   const { metrika, reviews, reviewsGoogle, google } = report;
   const l = LABELS[lang];
 
-  const card = (label: string, value: number): string => `
-    <td style="padding:8px;">
-      <div style="background:#f4f6fa;border-radius:10px;padding:16px;text-align:center;">
-        <div style="font-size:13px;color:#666;">${label}</div>
-        <div style="font-size:30px;font-weight:700;color:#1a1a2e;padding-top:4px;">${value}</div>
-      </div>
-    </td>`;
-
-  const cardsYandex = ([
+  const cardsYandex = metricCardsRow([
     [l.profileViews, metrika.showOrg],
     [l.directions, metrika.route],
     [l.calls, metrika.call],
     [l.site, metrika.site],
-  ] as [string, number][]).map(([lbl, v]) => card(lbl, v)).join('');
+  ]);
 
   const googleCardsHtml = google
     ? `
     <p style="margin:16px 0 6px;font-size:13px;color:#888;">Google:</p>
-    <table style="border-collapse:collapse;width:100%;"><tr>${(
-      [
-        [l.profileViews, google.profileViews],
-        [l.directions, google.directionRequests],
-        [l.calls, google.calls],
-        [l.site, google.siteClicks],
-      ] as [string, number][]
-    ).map(([lbl, v]) => card(lbl, v)).join('')}</tr></table>`
+    ${metricCardsRow([
+      [l.profileViews, google.profileViews],
+      [l.directions, google.directionRequests],
+      [l.calls, google.calls],
+      [l.site, google.siteClicks],
+    ])}`
     : '';
 
   const reviewsHtml =
@@ -306,6 +346,84 @@ export async function sendReviewsEmail(sections: ReviewsEmailSections, opts: Rep
   const subject = buildSubject(LABELS[lang].reviewsReportWord, opts.brand, { date: iso(start), dateTo: iso(end) }, lang);
   const html = buildReviewsOnlyHtml(sections, lang, new Date().toISOString());
   await dispatchEmail(subject, html, opts.brand ?? DEFAULT_BRAND[lang]);
+}
+
+/** Data of the metrics-only email: chain totals plus a per-branch breakdown. */
+export interface MetricsEmailReport {
+  date: string;
+  dateTo: string;
+  generatedAt: string;
+  yandex: {
+    route: number;
+    call: number;
+    site: number;
+    showOrg: number;
+    /** Per-branch breakdown with the same fields (optional — empty when the API gave none) */
+    branches?: { branch: string; route: number; call: number; site: number; showOrg: number }[];
+  };
+  google?: {
+    profileViews: number;
+    siteClicks: number;
+    calls: number;
+    directionRequests: number;
+    branches?: { branch: string; profileViews: number; siteClicks: number; calls: number; directionRequests: number }[];
+  } | null;
+}
+
+/** HTML of the metrics-only email: per service — totals cards + the per-branch table; no reviews. */
+function buildMetricsHtml(report: MetricsEmailReport, lang: ReportLanguage): string {
+  const l = LABELS[lang];
+  const yName = lang === 'ru' ? 'Яндекс' : 'Yandex';
+  const cols = [l.branch, l.colViews, l.colRoutes, l.colCalls, l.colSite];
+
+  // one service block: header, totals cards, then its per-branch table
+  const section = (name: string, first: boolean, cards: string, tableRows: (string | number)[][]): string => {
+    const table = tableRows.length > 0
+      ? `<p style="margin:16px 0 8px;font-size:13px;color:#888;">${l.byBranch}</p>\n    ${buildBranchTable(cols, tableRows)}`
+      : '';
+    return `
+    <h2 style="margin:${first ? 0 : '32px'} 0 10px;font-size:16px;border-bottom:2px solid #e5e8ee;padding-bottom:6px;">${name}</h2>
+    ${cards}
+    ${table}`;
+  };
+
+  const yandexSection = section(yName, true,
+    metricCardsRow([
+      [l.profileViews, report.yandex.showOrg],
+      [l.directions, report.yandex.route],
+      [l.calls, report.yandex.call],
+      [l.site, report.yandex.site],
+    ]),
+    (report.yandex.branches ?? []).map((b) => [b.branch, b.showOrg, b.route, b.call, b.site]),
+  );
+
+  const googleSection = report.google
+    ? section('Google', false,
+        metricCardsRow([
+          [l.profileViews, report.google.profileViews],
+          [l.directions, report.google.directionRequests],
+          [l.calls, report.google.calls],
+          [l.site, report.google.siteClicks],
+        ]),
+        (report.google.branches ?? []).map((b) => [b.branch, b.profileViews, b.directionRequests, b.calls, b.siteClicks]),
+      )
+    : '';
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#1a1a2e;">${yandexSection}${googleSection}
+    <p style="color:#bbb;font-size:12px;margin-top:28px;">${l.generated(formatDateTimeLocal(report.generatedAt))}</p>
+  </div>`;
+}
+
+/**
+ * Sends the metrics-only email (subject 'Metrics report ...' / 'Отчёт по
+ * метрикам ...') — chain totals as cards plus the per-branch tables, no
+ * reviews. Used by collectMetrics with sendEmail: true.
+ */
+export async function sendMetricsEmail(report: MetricsEmailReport, opts: ReportOptions = {}): Promise<void> {
+  const lang = opts.lang ?? DEFAULT_LANG;
+  const subject = buildSubject(LABELS[lang].metricsReportWord, opts.brand, report, lang);
+  await dispatchEmail(subject, buildMetricsHtml(report, lang), opts.brand ?? DEFAULT_BRAND[lang]);
 }
 
 /**
