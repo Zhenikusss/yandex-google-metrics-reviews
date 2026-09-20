@@ -32,4 +32,12 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes
+        # the release notes = the topmost CHANGELOG.md section;
+        # without a changelog — GitHub's auto-generated notes
+        run: |
+          awk '/^## /{if (n++) exit} n' CHANGELOG.md > release_notes.md 2>/dev/null || true
+          if [ -s release_notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --notes-file release_notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes
+          fi

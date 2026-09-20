@@ -1,7 +1,7 @@
 {
   "name": "yandex-google-metrics-reviews",
-  "version": "0.1.1",
-  "description": "Chain metrics and reviews from Yandex Maps and Google Maps — a daily report in one call (JSON + email)",
+  "version": "0.2.0",
+  "description": "Chain metrics and reviews from Yandex Maps and Google Maps — daily, weekly and monthly reports in one call (JSON + email)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,6 +17,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "branches.example.json"
   ],
@@ -32,7 +33,9 @@
     "business-profile",
     "reviews",
     "metrika",
-    "scraper"
+    "scraper",
+    "report",
+    "email"
   ],
   "license": "MIT",
   "repository": {

@@ -15,7 +15,7 @@
 
 import * as dotenv from 'dotenv';
 import { DEFAULT_DAYS_BACK } from '../options.js';
-import type { ReportOptions } from '../options.js';
+import type { MetricsOptions } from '../options.js';
 import { loadBranchAliases, normalizeBranchName } from '../branches.js';
 import { getGoogleAccessToken, listGoogleLocations } from './auth.js';
 import type { GoogleLocation } from './auth.js';
@@ -51,8 +51,18 @@ function fmt(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Range like in Metrika: from (yesterday - daysBack + 1) to yesterday */
-function getReportDateRange(daysBack: number): { start: Date; end: Date } {
+/**
+ * Range like in Metrika: from (yesterday - daysBack + 1) to yesterday.
+ * An explicit dateFrom/dateTo pair overrides daysBack (the 'month' period
+ * of collectMetrics and custom periods).
+ */
+function getReportDateRange(daysBack: number, dateFrom?: string, dateTo?: string): { start: Date; end: Date } {
+  if (dateFrom && dateTo) {
+    return {
+      start: new Date(`${dateFrom}T00:00:00`),
+      end: new Date(`${dateTo}T00:00:00`),
+    };
+  }
   const end = new Date();
   end.setDate(end.getDate() - 1);
   const start = new Date(end);
@@ -124,11 +134,17 @@ async function fetchLocationStats(
  *   BUSINESS_IMPRESSIONS_{DESKTOP,MOBILE}_{MAPS,SEARCH}
  *   (DIRECTION_REQUESTS does not exist — a 400 INVALID_ARGUMENT follows)
  */
-export async function getGoogleStats(opts: ReportOptions = {}): Promise<GoogleStats> {
+export async function getGoogleStats(opts: MetricsOptions = {}): Promise<GoogleStats> {
   const accessToken = await getGoogleAccessToken();
   const locations: GoogleLocation[] = await listGoogleLocations(accessToken);
-  const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;
-  const { start, end } = getReportDateRange(daysBack);
+
+  // 'week'/'month' are collectMetrics keywords — here they arrive only
+  // together with the resolved dateFrom/dateTo; a bare keyword is a mistake
+  if (typeof opts.daysBack === 'string' && !opts.dateFrom && !opts.dateTo) {
+    throw new Error(`daysBack: '${opts.daysBack}' is a collectMetrics keyword — pass a number of days or dateFrom/dateTo`);
+  }
+  const daysBack = typeof opts.daysBack === 'number' ? opts.daysBack : DEFAULT_DAYS_BACK;
+  const { start, end } = getReportDateRange(daysBack, opts.dateFrom, opts.dateTo);
 
   console.log(`[Google] Metrics for ${fmt(start)}..${fmt(end)} across ${locations.length} locations...`);
 

@@ -1,5 +1,5 @@
 {
-  "_description": "Google address -> branch name mapping. Key — a substring of the Google address, value — the branch name in the report. Copy to branches.json and adjust for your chain; keys starting with _ are ignored. An address without a match still appears in the report, cleaned (street with house number, no city or postal code).",
+  "_description": "Platform address -> branch name mapping. Key — a substring of the Google address OR of the Yandex Metrika organization name (both spellings when they differ, e.g. Russian and Belarusian), value — the branch name in the report. Copy to branches.json and adjust for your chain; keys starting with _ are ignored. An address without a match still appears in the report, cleaned (street with house number, no city or postal code).",
 
   "Lenina": "Lenina St, 10",
   "Central": "Central Ave, 5",

@@ -8,7 +8,7 @@
 import axios from 'axios';
 import * as dotenv from 'dotenv';
 import { DEFAULT_DAYS_BACK } from '../options.js';
-import type { ReportOptions } from '../options.js';
+import type { MetricsOptions } from '../options.js';
 import { loadBranchAliases, cleanYandexOrgName } from '../branches.js';
 
 dotenv.config({ quiet: true });
@@ -63,8 +63,12 @@ function formatDate(date: Date): string {
 /**
  * Report range: from (yesterday - daysBack + 1) to yesterday.
  * daysBack = 1 -> yesterday only, 7 -> the last 7 days.
+ * An explicit dateFrom/dateTo pair overrides daysBack (the 'month' period
+ * of collectMetrics and custom periods).
  */
-function getReportDateRange(daysBack: number): { start: string; end: string } {
+function getReportDateRange(daysBack: number, dateFrom?: string, dateTo?: string): { start: string; end: string } {
+  if (dateFrom && dateTo) return { start: dateFrom, end: dateTo };
+
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
 
@@ -127,13 +131,18 @@ function normalizeMetrika(raw: any, date: string, dateTo: string): MetrikaDaily 
 }
 
 /** Collects and normalizes Yandex Metrika data for the period. */
-export async function getYandexStats(opts: ReportOptions = {}): Promise<MetrikaDaily> {
+export async function getYandexStats(opts: MetricsOptions = {}): Promise<MetrikaDaily> {
   if (!YANDEX_TOKEN || !YANDEX_COUNTER_ID) {
     throw new Error('YANDEX_METRIKA_TOKEN and/or YANDEX_COUNTER_ID are not set (.env)');
   }
 
-  const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;
-  const { start, end } = getReportDateRange(daysBack);
+  // 'week'/'month' are collectMetrics keywords — here they arrive only
+  // together with the resolved dateFrom/dateTo; a bare keyword is a mistake
+  if (typeof opts.daysBack === 'string' && !opts.dateFrom && !opts.dateTo) {
+    throw new Error(`daysBack: '${opts.daysBack}' is a collectMetrics keyword — pass a number of days or dateFrom/dateTo`);
+  }
+  const daysBack = typeof opts.daysBack === 'number' ? opts.daysBack : DEFAULT_DAYS_BACK;
+  const { start, end } = getReportDateRange(daysBack, opts.dateFrom, opts.dateTo);
 
   const params: MetrikaParams = {
     id: YANDEX_COUNTER_ID,

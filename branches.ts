@@ -37,7 +37,7 @@ export function normalizeBranchName(address: string | null, fallback: string, al
 
 /**
  * Yandex Metrika organization name like
- * "Мінская вобласць, Барысаў, вуліца Будаўнікоў, 45А" -> "вуліца Будаўнікоў, 45А":
+ * "Region, City, Main Street, 45A" -> "Main Street, 45A":
  * aliases are matched first against the full name, then against the street
  * part (the first two segments — region and city — are dropped).
  */

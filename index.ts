@@ -15,11 +15,11 @@
 * collectReviews({ sendEmail: true }) collects reviews from both platforms
 * and sends ONE reviews-only email ("Reviews report ..." /
 * "Отчёт по отзывам ...").
-* collectMetrics({ daysBack: 7, sendEmail: true }) does the same for the
-* METRICS of both platforms (totals + per branch) into
-* metrics_report.json + email ("Metrics report ..." /
-* "Отчёт по метрикам ..."); called on Tuesdays with daysBack: 7 it
-* covers exactly the past Tuesday..Monday.
+* collectMetrics({ daysBack, sendEmail: true }) does the same for the
+* METRICS of both platforms (totals + per branch): daysBack is a number
+* of days ending yesterday, 'week' — a readable alias of the same
+* trailing 7 days, 'month' — the whole previous calendar month; the JSON
+* goes to metrics_report.json / weekly_report.json / monthly_report.json.
 *
 * As a command: npx yandex-google-metrics-reviews
 */
@@ -55,15 +55,9 @@ export type { ReviewsEmailSections } from './mailer.js';
 export { sendMetricsEmail } from './mailer.js';
 export type { MetricsEmailReport } from './mailer.js';
 export { DEFAULT_DAYS_BACK, DEFAULT_LANG, DEFAULT_BRAND } from './options.js';
-export type { ReportOptions, ReportLanguage, ReviewsOptions, MetricsOptions } from './options.js';
+export type { ReportOptions, ReportLanguage, ReviewsOptions, MetricsOptions, MetricsPeriod } from './options.js';
 export type { YandexBranchMetrics } from './yandex-parser/metrika.js';
 export type { GoogleBranchMetrics } from './google-parser/metrika.js';
-
-/** Options for the full report run. */
-export interface RunReportOptions extends ReportOptions {
-  /** Where to write daily_report.json (defaults to the current directory) */
-  reportFile?: string | undefined;
-}
 
 /** Result of collectReviews: both platforms, Google null when it failed. */
 export interface AllReviewsCollection {
@@ -111,28 +105,39 @@ export interface MetricsCollection {
   google: GoogleStats | null; // totals + branches; null — collection failed (logged)
 }
 
-/**
- * Metrics of BOTH platforms in one call (no reviews): Yandex + Google
- * chain totals and a per-branch breakdown with the same fields, for the
- * daysBack period (yesterday by default). Writes metrics_report.json;
- * with sendEmail: true also sends the metrics-only email
- * ("Metrics report ..." / "Отчёт по метрикам ..."). A Google failure
- * does not break the Yandex part.
- *
- * A weekly cadence needs no special options: run this on Tuesdays with
- * daysBack: 7 — the period is (yesterday - 6) .. yesterday, i.e. exactly
- * the past Tuesday..Monday.
- */
-export async function collectMetrics(opts: MetricsOptions = {}): Promise<MetricsCollection> {
-  console.log('========================================');
-  console.log('Metrics collection');
-  console.log('========================================\n');
+/** YYYY-MM-DD in local time */
+function fmtDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
-  const yandex = await getYandexStats(opts);
+/**
+ * The previous calendar month: run on ANY day of September ->
+ * August 1 .. August 31 (the year rolls over correctly in January).
+ */
+function getLastMonthRange(today: Date = new Date()): { start: string; end: string } {
+  const firstOfThisMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const end = new Date(firstOfThisMonth.getFullYear(), firstOfThisMonth.getMonth(), 0); // last day of the previous month
+  const start = new Date(end.getFullYear(), end.getMonth(), 1);
+  return { start: fmtDate(start), end: fmtDate(end) };
+}
+
+/**
+ * Shared body of the metrics collections: both platforms -> JSON file ->
+ * optional email. `range` pins the exact period ('month');
+ * without it the collectors derive it from daysBack.
+ */
+async function collectMetricsFor(
+  opts: MetricsOptions,
+  range: { start: string; end: string } | null,
+  defaultFileName: string,
+): Promise<MetricsCollection> {
+  const periodOpts = range ? { ...opts, dateFrom: range.start, dateTo: range.end } : opts;
+
+  const yandex = await getYandexStats(periodOpts);
 
   let google: GoogleStats | null = null;
   try {
-    google = await getGoogleStats(opts);
+    google = await getGoogleStats(periodOpts);
   } catch (e) {
     console.error(`[Google] Metrics not collected, the report will skip them: ${e instanceof Error ? e.message : e}\n`);
   }
@@ -145,7 +150,7 @@ export async function collectMetrics(opts: MetricsOptions = {}): Promise<Metrics
     google,
   };
 
-  const file = opts.reportFile ?? path.join(process.cwd(), 'metrics_report.json');
+  const file = path.join(process.cwd(), defaultFileName);
   fs.writeFileSync(file, JSON.stringify(report, null, 2), 'utf-8');
   console.log(`Report saved: ${file}`);
 
@@ -158,10 +163,45 @@ export async function collectMetrics(opts: MetricsOptions = {}): Promise<Metrics
 }
 
 /**
+ * Metrics of BOTH platforms in one call (no reviews): Yandex + Google
+ * chain totals and a per-branch breakdown with the same fields.
+ * Writes a JSON file (metrics_report.json / weekly_report.json /
+ * monthly_report.json by the period kind); with sendEmail: true also
+ * sends the metrics-only email ("Metrics report ..." / "Отчёт по
+ * метрикам ..."). A Google failure does not break the Yandex part.
+ *
+ * The period, set by daysBack:
+ *   a number — that many days back ending yesterday (7 = yesterday-6..yesterday);
+ *   'week'  — a readable alias of the same trailing 7 days ending yesterday
+ *             (run on a Thursday -> the previous Thursday..Wednesday);
+ *   'month' — the whole PREVIOUS calendar month (any September day -> 01..31 August).
+ */
+export async function collectMetrics(opts: MetricsOptions = {}): Promise<MetricsCollection> {
+  const period = opts.daysBack;
+  const isMonth = period === 'month';
+  const isWeek = period === 'week';
+
+  // 'week' == the trailing 7 days; the keyword only picks the JSON file name
+  const effOpts: MetricsOptions = isWeek
+    ? { ...opts, daysBack: 7 }
+    : isMonth
+      ? { ...opts, daysBack: undefined }
+      : opts;
+  const range = isMonth ? getLastMonthRange() : null;
+  const defaultFile = isMonth ? 'monthly_report.json' : isWeek ? 'weekly_report.json' : 'metrics_report.json';
+
+  console.log('========================================');
+  console.log(range ? `Metrics: ${range.start} .. ${range.end}` : 'Metrics collection');
+  console.log('========================================\n');
+
+  return collectMetricsFor(effOpts, range, defaultFile);
+}
+
+/**
  * Full run: all sources -> daily_report.json -> email.
  * Failures of the Google sources do not break the Yandex part of the report.
  */
-export async function runReport(opts: RunReportOptions = {}): Promise<Record<string, unknown>> {
+export async function runReport(opts: ReportOptions = {}): Promise<Record<string, unknown>> {
   console.log('========================================');
   console.log('Data collector started');
   console.log('========================================\n');
@@ -215,7 +255,7 @@ export async function runReport(opts: RunReportOptions = {}): Promise<Record<str
     };
   }
 
-  const file = opts.reportFile ?? path.join(process.cwd(), 'daily_report.json');
+  const file = path.join(process.cwd(), 'daily_report.json');
   fs.writeFileSync(file, JSON.stringify(report, null, 2), 'utf-8');
   console.log(`Report saved: ${file}`);
 

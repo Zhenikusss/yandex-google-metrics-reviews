@@ -31,17 +31,38 @@ export interface ReviewsOptions extends ReportOptions {
   sendEmail?: boolean | undefined;
 }
 
-export interface MetricsOptions extends ReportOptions {
+/**
+ * The metrics period of collectMetrics: a number of days back — that
+ * many days ending yesterday (7 = yesterday-6 .. yesterday); 'week' —
+ * a readable alias of the same trailing 7 days ending yesterday (run on
+ * a Thursday -> the previous Thursday..Wednesday); 'month' — the whole
+ * PREVIOUS calendar month (any September run covers 01..31 August).
+ */
+export type MetricsPeriod = number | 'week' | 'month';
+
+export interface MetricsOptions extends Omit<ReportOptions, 'daysBack'> {
   /**
-   * collectMetrics only: after collecting both platforms send ONE
-   * metrics-only email — chain totals + per-branch tables, no reviews
+   * The collection period: a number of days (default 1 — yesterday),
+   * 'week' or 'month' — see MetricsPeriod.
+   */
+  daysBack?: MetricsPeriod | undefined;
+
+  /**
+   * collectMetrics: send ONE metrics-only email after collecting —
+   * chain totals + per-branch tables, no reviews
    * (default false — collect only, no email). Recipients and SMTP
    * come from .env, the language and brand from the sibling options.
    */
   sendEmail?: boolean | undefined;
 
-  /** Where to write metrics_report.json (defaults to the current directory) */
-  reportFile?: string | undefined;
+  /**
+   * Explicit period, YYYY-MM-DD (inclusive). When both dateFrom and
+   * dateTo are set they override daysBack — for any exact custom period.
+   */
+  dateFrom?: string | undefined;
+
+  /** Explicit period end, YYYY-MM-DD (inclusive). */
+  dateTo?: string | undefined;
 }
 
 /** Default value: a yesterday report. */
