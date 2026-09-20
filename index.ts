@@ -6,9 +6,14 @@
 * an email to MAIL_TO recipients (when mail is configured).
 *
 * As a library:
-*   import { runReport, getYandexStats, collectYandexReviews,
-*            getGoogleStats, collectGoogleReviews, sendReportEmail }
+*   import { runReport, collectReviews, getYandexStats,
+*            collectYandexReviews, getGoogleStats, collectGoogleReviews,
+*            sendReportEmail, sendReviewsEmail }
 *     from 'yandex-google-metrics-reviews';
+*
+* collectReviews({ sendEmail: true }) collects reviews from both platforms
+* and sends ONE reviews-only email ("Reviews report ..." /
+* "Отчёт по отзывам ...").
 *
 * As a command: npx yandex-google-metrics-reviews
 */
@@ -19,10 +24,12 @@ import * as dotenv from 'dotenv';
 import { pathToFileURL } from 'url';
 import { getYandexStats } from './yandex-parser/metrika.js';
 import { collectYandexReviews } from './yandex-parser/reviews.js';
+import type { ReviewsCollection } from './yandex-parser/reviews.js';
 import { getGoogleStats } from './google-parser/metrika.js';
 import { collectGoogleReviews } from './google-parser/reviews.js';
-import { sendReportEmail } from './mailer.js';
-import type { ReportOptions } from './options.js';
+import type { GoogleReviewsCollection } from './google-parser/reviews.js';
+import { sendReportEmail, sendReviewsEmail } from './mailer.js';
+import type { ReportOptions, ReviewsOptions } from './options.js';
 
 // ---- public API ----
 export { getYandexStats } from './yandex-parser/metrika.js';
@@ -35,13 +42,52 @@ export { collectGoogleReviews } from './google-parser/reviews.js';
 export type { GoogleReviewsCollection, GoogleBranchResult } from './google-parser/reviews.js';
 export { sendReportEmail } from './mailer.js';
 export type { DailyReport } from './mailer.js';
+export { sendReviewsEmail } from './mailer.js';
+export type { ReviewsEmailSections } from './mailer.js';
 export { DEFAULT_DAYS_BACK, DEFAULT_LANG, DEFAULT_BRAND } from './options.js';
-export type { ReportOptions, ReportLanguage } from './options.js';
+export type { ReportOptions, ReportLanguage, ReviewsOptions } from './options.js';
 
 /** Options for the full report run. */
 export interface RunReportOptions extends ReportOptions {
   /** Where to write daily_report.json (defaults to the current directory) */
   reportFile?: string | undefined;
+}
+
+/** Result of collectReviews: both platforms, Google null when it failed. */
+export interface AllReviewsCollection {
+  yandex: ReviewsCollection;
+  /** null when the Google collection failed (logged, does not break the run) */
+  google: GoogleReviewsCollection | null;
+}
+
+/**
+ * Reviews from BOTH platforms in one call: Yandex Maps (browser scraping)
+ * and Google Maps (official API). A Google failure does not break the
+ * Yandex part. With sendEmail: true sends ONE reviews-only email with
+ * both sections together ("Reviews report ..." / "Отчёт по отзывам ...").
+ */
+export async function collectReviews(opts: ReviewsOptions = {}): Promise<AllReviewsCollection> {
+  const yandex = await collectYandexReviews(opts);
+
+  let google: GoogleReviewsCollection | null = null;
+  try {
+    google = await collectGoogleReviews(opts);
+  } catch (e) {
+    console.error(`[Google] Collection failed, the reviews email will skip Google: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // one email with both platforms; without sendEmail — collect only
+  if (opts.sendEmail) {
+    await sendReviewsEmail(
+      {
+        reviews: { total: yandex.total, branches: yandex.branches },
+        reviewsGoogle: google ? { total: google.total, branches: google.branches } : undefined,
+      },
+      opts,
+    );
+  }
+
+  return { yandex, google };
 }
 
 /**

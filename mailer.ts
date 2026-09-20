@@ -1,5 +1,7 @@
 /**
- * Sends the report as an HTML email.
+ * Sends the report as an HTML email: the full one (sendReportEmail) or
+ * reviews-only (sendReviewsEmail — one email with the reviews of BOTH
+ * platforms, used by collectReviews with sendEmail: true).
  * Settings come from .env:
  *   SMTP_HOST / SMTP_PORT — your email provider's SMTP server and port
  *   SMTP_USER / SMTP_PASS — sender mailbox login and APP PASSWORD
@@ -12,7 +14,7 @@
 
 import nodemailer from 'nodemailer';
 import type { ReportOptions, ReportLanguage } from './options.js';
-import { DEFAULT_LANG, DEFAULT_BRAND } from './options.js';
+import { DEFAULT_LANG, DEFAULT_BRAND, DEFAULT_DAYS_BACK } from './options.js';
 
 export interface DailyReport {
   date: string;   // first day of the period
@@ -54,7 +56,7 @@ export interface DailyReport {
 
 /** Email strings for the supported languages. */
 const LABELS: Record<ReportLanguage, {
-  subtitle: string;
+  reviewsReportWord: string;
   yandex: string;
   profileViews: string;
   directions: string;
@@ -68,7 +70,7 @@ const LABELS: Record<ReportLanguage, {
   fromTo: (a: string, b: string) => string;
 }> = {
   en: {
-    subtitle: 'Yandex Business stats + new reviews from Yandex Maps and Google Maps',
+    reviewsReportWord: 'Reviews report',
     yandex: 'Yandex:',
     profileViews: 'Profile views',
     directions: 'Direction requests',
@@ -82,7 +84,7 @@ const LABELS: Record<ReportLanguage, {
     fromTo: (a, b) => `from ${a} to ${b}`,
   },
   ru: {
-    subtitle: 'Статистика Яндекс.Бизнес + новые отзывы с Яндекс.Карт и Google Maps',
+    reviewsReportWord: 'Отчёт по отзывам',
     yandex: 'Яндекс:',
     profileViews: 'Просмотров профиля',
     directions: 'Проложено маршрутов',
@@ -126,12 +128,30 @@ function ratingStars(rating: number | null): string {
 }
 
 /** Period label: single day -> "for 11.09.2026", range -> "from ... to ..." */
-function periodLabel(report: DailyReport, lang: ReportLanguage): string {
+function periodLabel(period: { date: string; dateTo?: string }, lang: ReportLanguage): string {
   const l = LABELS[lang];
-  if (!report.dateTo || report.dateTo === report.date) {
-    return l.for(formatDate(report.date));
+  if (!period.dateTo || period.dateTo === period.date) {
+    return l.for(formatDate(period.date));
   }
-  return l.fromTo(formatDate(report.date), formatDate(report.dateTo));
+  return l.fromTo(formatDate(period.date), formatDate(period.dateTo));
+}
+
+/**
+ * Subject: 'Report "My Chain" for 11.09.2026' — the leading word is
+ * 'Report'/'Отчёт' for the full report and 'Reviews report'/'Отчёт по
+ * отзывам' for a reviews-only one.
+ */
+function buildSubject(
+  title: string,
+  brand: string | undefined,
+  period: { date: string; dateTo?: string },
+  lang: ReportLanguage,
+): string {
+  // quote style by language; without a brand the quotes are dropped
+  const brandQuoted = brand ? (lang === 'ru' ? `«${brand}»` : `"${brand}"`) : '';
+  return brandQuoted
+    ? `${title} ${brandQuoted} ${periodLabel(period, lang)}`
+    : `${title} ${periodLabel(period, lang)}`;
 }
 
 /** Reviews table grouped by branch: branch header row, then one row per review */
@@ -212,7 +232,6 @@ function buildHtml(report: DailyReport, lang: ReportLanguage): string {
 
   return `
   <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#1a1a2e;">
-    <p style="color:#888;margin:0 0 6px;font-size:13px;">${l.subtitle}</p>
     <p style="margin:0 0 6px;font-size:13px;color:#888;">${l.yandex}</p>
     <table style="border-collapse:collapse;width:100%;"><tr>${cardsYandex}</tr></table>
     ${googleCardsHtml}
@@ -229,6 +248,72 @@ function buildHtml(report: DailyReport, lang: ReportLanguage): string {
  * Language and brand come from the call options.
  */
 export async function sendReportEmail(report: DailyReport, opts: ReportOptions = {}): Promise<void> {
+  const lang = opts.lang ?? DEFAULT_LANG;
+  const subject = buildSubject(DEFAULT_BRAND[lang], opts.brand, report, lang);
+  await dispatchEmail(subject, buildHtml(report, lang), opts.brand ?? DEFAULT_BRAND[lang]);
+}
+
+/** Sections of a reviews-only email: a Yandex and/or Google collection. */
+export interface ReviewsEmailSections {
+  reviews?: DailyReport['reviews'];
+  reviewsGoogle?: DailyReport['reviewsGoogle'];
+}
+
+/** HTML of the reviews-only email: just the review sections, no metric cards. */
+function buildReviewsOnlyHtml(sections: ReviewsEmailSections, lang: ReportLanguage, generatedAt: string): string {
+  const l = LABELS[lang];
+
+  const sectionHtml = (total: number, branches: NonNullable<DailyReport['reviews'] | DailyReport['reviewsGoogle']>) =>
+    total === 0
+      ? `<p style="color:#666;">${l.noReviews}</p>`
+      : buildReviewsTable(branches.branches);
+
+  // the first present section sits flush at the top, the next one is spaced
+  const yandexHtml = sections.reviews
+    ? `<h3 style="margin:0 0 10px;">${l.reviewsYandex(sections.reviews.total)}</h3>\n    ${sectionHtml(sections.reviews.total, sections.reviews)}`
+    : '';
+  const googleHtml = sections.reviewsGoogle
+    ? `<h3 style="margin:${sections.reviews ? '28px' : '0'} 0 10px;">${l.reviewsGoogle(sections.reviewsGoogle.total)}</h3>\n    ${sectionHtml(sections.reviewsGoogle.total, sections.reviewsGoogle)}`
+    : '';
+
+  return `
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#1a1a2e;">
+    ${yandexHtml}
+    ${googleHtml}
+    <p style="color:#bbb;font-size:12px;margin-top:28px;">${l.generated(formatDateTimeLocal(generatedAt))}</p>
+  </div>`;
+}
+
+/**
+ * Sends ONE reviews-only email (subject 'Reviews report ...' / 'Отчёт по
+ * отзывам ...') with the Yandex and/or Google reviews together — used by
+ * collectReviews with sendEmail: true.
+ * The period in the subject follows the same convention as the metrika
+ * range: daysBack = 1 -> "for yesterday", more -> "from ... to yesterday".
+ */
+export async function sendReviewsEmail(sections: ReviewsEmailSections, opts: ReportOptions = {}): Promise<void> {
+  const lang = opts.lang ?? DEFAULT_LANG;
+  const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;
+
+  // period bounds: from (today - daysBack) to yesterday, YYYY-MM-DD local
+  const start = new Date();
+  start.setDate(start.getDate() - daysBack);
+  const end = new Date();
+  end.setDate(end.getDate() - 1);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  const subject = buildSubject(LABELS[lang].reviewsReportWord, opts.brand, { date: iso(start), dateTo: iso(end) }, lang);
+  const html = buildReviewsOnlyHtml(sections, lang, new Date().toISOString());
+  await dispatchEmail(subject, html, opts.brand ?? DEFAULT_BRAND[lang]);
+}
+
+/**
+ * Shared delivery of both report kinds: a separate email per recipient
+ * (each one sees only themselves in "To"). Skipped with a warning when
+ * mail is not configured — collection is not considered failed.
+ */
+async function dispatchEmail(subject: string, html: string, brand: string): Promise<void> {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_TO } = process.env;
 
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !MAIL_TO) {
@@ -246,18 +331,6 @@ export async function sendReportEmail(report: DailyReport, opts: ReportOptions =
     auth: { user: SMTP_USER, pass: SMTP_PASS },
   });
 
-  const lang = opts.lang ?? DEFAULT_LANG;
-  const reportWord = DEFAULT_BRAND[lang]; // the localized "Report" word
-  const brand = opts.brand ?? reportWord;
-  // subject: 'Report "My Chain" for ...' (quote style by language);
-  // the sender name stays just the brand, without the word
-  const brandQuoted = opts.brand
-    ? (lang === 'ru' ? `«${opts.brand}»` : `"${opts.brand}"`)
-    : '';
-  const subject = brandQuoted
-    ? `${reportWord} ${brandQuoted} ${periodLabel(report, lang)}`
-    : `${reportWord} ${periodLabel(report, lang)}`;
-  const html = buildHtml(report, lang);
   const sent: string[] = [];
   const failed: string[] = [];
 

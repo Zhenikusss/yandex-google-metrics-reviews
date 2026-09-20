@@ -296,6 +296,8 @@ export interface ReviewsCollection {
 /**
  * Collects reviews for the last daysBack days (yesterday by default)
  * across all chain branches. Opens a visible browser (Yandex blocks headless).
+ * To also send the collected reviews by email use collectReviews()
+ * from index.ts (one email for both platforms).
  */
 export async function collectYandexReviews(opts: ReportOptions = {}): Promise<ReviewsCollection> {
   const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;

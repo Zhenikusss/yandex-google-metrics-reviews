@@ -27,6 +27,7 @@
     "start": "tsx index.ts",
     "test:yandex-metrics": "tsx yandex-parser/metrika.ts",
     "test:yandex-reviews": "tsx yandex-parser/reviews.ts",
+    "test:reviews-email": "tsx test-reviews-email.ts",
     "test:google-metrics": "tsx google-parser/metrika.ts",
     "test:google-reviews": "tsx google-parser/reviews.ts"
   },

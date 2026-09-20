@@ -12,7 +12,8 @@ A full period report (JSON + email) or individual sources as a library.
 - **Reviews — Yandex Maps:** per branch (author, rating, date, text)
 - **Reviews — Google:** the same, via the official API
 - **Report email** to every recipient (a separate email each) —
-  optional, JSON alone is fine too
+  optional, JSON alone is fine too; `collectReviews({ sendEmail: true })`
+  sends one reviews-only email with the reviews of both platforms
 
 The period is set by the `daysBack` parameter of any function
 (default 1 — yesterday) and applies to all sources at once.
@@ -34,11 +35,13 @@ npx playwright install chromium
 ```ts
 import {
   runReport,              // full run: all sources -> daily_report.json -> email
+  collectReviews,         // reviews of BOTH platforms + one reviews-only email
   getYandexStats,         // Yandex Metrika metrics
   collectYandexReviews,   // Yandex Maps reviews
   getGoogleStats,         // Google Business Profile metrics
   collectGoogleReviews,   // Google reviews
   sendReportEmail,        // email with a ready report
+  sendReviewsEmail,       // reviews-only email
 } from 'yandex-google-metrics-reviews';
 
 // everything at once, for yesterday (default)
@@ -52,7 +55,10 @@ const weekly = await runReport({
   brand: 'My Chain',
 });
 
-// or individually
+// reviews of both platforms + ONE email with them together
+const all = await collectReviews({ daysBack: 1, sendEmail: true });
+
+// ...or without the email, and per platform
 const metrika = await getYandexStats({ daysBack: 3 });
 const reviews = await collectGoogleReviews({ daysBack: 3 });
 ```
@@ -64,6 +70,7 @@ const reviews = await collectGoogleReviews({ daysBack: 3 });
 | `daysBack` | how many days back to collect: 1 = yesterday | `1` |
 | `lang` | report email language: `'ru'` or `'en'` | `'en'` |
 | `brand` | sender name; in the subject — in quotes after the word Report/Отчёт: `Report "My Chain" for 15.09.2026` | `'Report'` / `'Отчёт'` (by language) |
+| `sendEmail` | `collectReviews` only: send ONE reviews-only email with the Yandex and Google reviews together — subject `Reviews report "My Chain" for 15.09.2026` / `Отчёт по отзывам «My Chain» за 15.09.2026`, no metric cards; recipients and SMTP from `.env` | `false` (collect only) |
 
 ## Command usage
 
@@ -77,7 +84,7 @@ directory and sends the email when mail is configured.
 ## Structure
 
 ```
-index.ts                    full run + library exports
+index.ts                    full run, combined reviews (collectReviews) + exports
 options.ts                  the shared daysBack option
 branches.json               branch names: Google address -> report name
 mailer.ts                   HTML email from the report

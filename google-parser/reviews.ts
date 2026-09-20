@@ -150,7 +150,8 @@ interface RawReview {
 
 /**
  * Reviews for the daysBack period (yesterday by default) across all
- * business account locations.
+ * business account locations. To also send the collected reviews by
+ * email use collectReviews() from index.ts (one email for both platforms).
  */
 export async function collectGoogleReviews(opts: ReportOptions = {}): Promise<GoogleReviewsCollection> {
   const accessToken = await getGoogleAccessToken();

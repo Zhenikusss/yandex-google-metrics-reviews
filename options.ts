@@ -21,6 +21,16 @@ export interface ReportOptions {
   lang?: ReportLanguage | undefined;
 }
 
+export interface ReviewsOptions extends ReportOptions {
+  /**
+   * collectReviews only: after collecting both platforms send ONE
+   * reviews-only email with the Yandex and Google reviews together
+   * (default false — collect only, no email). Recipients and SMTP
+   * come from .env, the language and brand from the sibling options.
+   */
+  sendEmail?: boolean | undefined;
+}
+
 /** Default value: a yesterday report. */
 export const DEFAULT_DAYS_BACK = 1;
 
