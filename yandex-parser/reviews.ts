@@ -11,12 +11,20 @@
 * IMPORTANT: Yandex Maps has no official reviews API, so this is scraping
 * of a public page in a real browser. Selectors may change — if you get
 * 0 reviews, inspect the current markup in DevTools.
+*
+* Yandex serves an antibot captcha on the FIRST visit (and to every
+* datacenter/CI IP — permanently). The browser therefore runs with a
+* persistent profile (YANDEX_PROFILE_DIR): cookies survive between runs.
+* The captcha is a plain checkbox — the collector ticks it automatically
+* (passCaptcha, a trusted mouse click) and waits for the challenge to
+* clear up to YANDEX_CAPTCHA_WAIT_MS (default 120s), then fails with a
+* screenshot saved into the working directory.
 */
 
 import { chromium } from 'playwright';
-import type { Browser, Page } from 'playwright';
+import type { BrowserContext, Page } from 'playwright';
 import * as path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { pathToFileURL } from 'url';
 import * as dotenv from 'dotenv';
 import { DEFAULT_DAYS_BACK } from '../options.js';
 import type { ReportOptions } from '../options.js';
@@ -35,6 +43,16 @@ const CHAIN_URL = process.env.YANDEX_CHAIN_URL;
 // Yandex Maps origin — derived from the chain URL, so the fallback links
 // match the user's domain (yandex.by / yandex.ru / yandex.kz ...)
 const MAPS_ORIGIN = CHAIN_URL ? new URL(CHAIN_URL).origin : 'https://yandex.by';
+
+// Browser profile directory: keeps Yandex cookies between runs, so a
+// captcha solved once (or just an established session) carries over.
+// Override via .env; created automatically.
+const PROFILE_DIR = process.env.YANDEX_PROFILE_DIR
+  ?? path.join(process.cwd(), '.yandex-profile');
+
+// How long to wait for a human to solve the captcha in the opened browser
+// window before failing. 0 disables the wait entirely.
+const CAPTCHA_WAIT_MS = Math.max(0, Number(process.env.YANDEX_CAPTCHA_WAIT_MS) || 120_000);
 
 interface Review {
   author: string;
@@ -66,6 +84,106 @@ function getCutoffDate(daysBack: number): Date {
   return d;
 }
 
+/** Saves a screenshot into the working directory (never inside the package). */
+async function debugScreenshot(page: Page, name: string): Promise<string> {
+  const file = path.join(process.cwd(), `${name}.png`);
+  await page.screenshot({ path: file }).catch(() => {});
+  return `${name}.png`;
+}
+
+/**
+ * Detects Yandex's antibot challenge on the current page: the show_captcha
+ * redirect, the SmartCaptcha widget or the classic captcha form.
+ */
+async function isCaptchaPage(page: Page): Promise<boolean> {
+  if (/captcha/i.test(page.url())) return true;
+  try {
+    return await page.evaluate(() => {
+      const widget = document.querySelector(
+        'iframe[src*="smart-captcha"], iframe[src*="smartcaptcha"], .smart-captcha, form[action*="captcha"], #captcha, .captcha__form',
+      );
+      if (widget) return true;
+      // the SmartCaptcha interstitial text (the page locale is forced to ru)
+      return (document.body?.innerText ?? '').includes('Подтвердите, что запросы отправляли вы');
+    });
+  } catch {
+    // the page is navigating (e.g. a just-solved captcha redirecting) — keep waiting
+    return true;
+  }
+}
+
+/**
+ * Attempts to tick the captcha checkbox automatically. Yandex's first-line
+ * challenge is a plain "I am not a robot" checkbox: in a real visible
+ * browser with a persistent profile the tick alone often passes. The
+ * checkbox lives either right on the interstitial page or inside the
+ * SmartCaptcha iframe — both are checked. The click is made through
+ * Playwright's Locator (a trusted input event with real mouse movement):
+ * captcha widgets ignore synthetic element.click() calls on purpose.
+ * Returns true when some checkbox candidate was clicked.
+ */
+async function tryTickCaptchaCheckbox(page: Page): Promise<boolean> {
+  for (const frame of page.frames()) {
+    const isMain = frame === page.mainFrame();
+    const inCaptchaFrame = !isMain && /captcha/i.test(frame.url());
+    if (!isMain && !inCaptchaFrame) continue;
+    // inside the captcha widget any button is the checkbox; on the page
+    // itself only checkbox-shaped elements — never random page buttons
+    // (the broad set is allowed on a dedicated captcha URL: no page UI there)
+    const broad = inCaptchaFrame || (isMain && /captcha/i.test(page.url()));
+    const selector = broad
+      ? 'input[type="checkbox"], [role="checkbox"], [class*="checkbox" i], button'
+      : 'input[type="checkbox"], [role="checkbox"], [class*="checkbox" i]';
+    const candidates = frame.locator(selector);
+    const count = await candidates.count().catch(() => 0);
+    for (let i = 0; i < count; i++) {
+      const loc = candidates.nth(i);
+      try {
+        // skip an already-ticked box — a second click would toggle it off
+        const alreadyTicked = await loc.evaluate((el) => {
+          const input = el as HTMLInputElement;
+          return (input.type === 'checkbox' && input.checked)
+            || el.getAttribute('aria-checked') === 'true';
+        });
+        if (alreadyTicked) continue;
+        await loc.click({ timeout: 2000 });
+        return true;
+      } catch {
+        // not clickable / the frame navigated — try the next candidate
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Called right after every page.goto: when Yandex served the captcha,
+ * ticks the checkbox automatically and waits for the challenge to clear,
+ * retrying the tick. Throws a dedicated error when it does not clear
+ * within CAPTCHA_WAIT_MS — the permanent state on CI runners, whose
+ * datacenter IPs always get the captcha.
+ */
+async function passCaptcha(page: Page, what: string): Promise<void> {
+  if (!(await isCaptchaPage(page))) return;
+  const seconds = Math.round(CAPTCHA_WAIT_MS / 1000);
+  console.warn(`   [!] Yandex demands a captcha on the ${what} page — ticking the checkbox automatically (budget ${seconds}s)...`);
+  const start = Date.now();
+  let lastClickAt = 0;
+  while (Date.now() - start < CAPTCHA_WAIT_MS) {
+    if (Date.now() - lastClickAt > 5000) {
+      if (await tryTickCaptchaCheckbox(page)) lastClickAt = Date.now();
+    }
+    await page.waitForTimeout(2500);
+    if (!(await isCaptchaPage(page))) {
+      console.log('   captcha passed, continuing');
+      await page.waitForTimeout(2000); // let the redirected target page mount
+      return;
+    }
+  }
+  const shot = await debugScreenshot(page, 'debug_captcha');
+  throw new Error(`Yandex captcha did not clear within ${seconds}s (screenshot in the working directory: ${shot}). Datacenter/CI IPs always get the captcha — run the Yandex part from a stable IP (e.g. a scheduled task on a home/office machine); the clearance cookies are stored in the profile (${PROFILE_DIR}) and reused by the next runs`);
+}
+
 /**
  * Collects branches from the chain page: scrolls the list with the mouse
  * (the panel is virtualized — only visible cards are in the DOM) and
@@ -76,7 +194,10 @@ async function discoverBranches(page: Page): Promise<Branch[]> {
   if (!CHAIN_URL) {
     throw new Error('YANDEX_CHAIN_URL is not set in .env (chain page URL on Yandex Maps)');
   }
+  const chainPathname = new URL(CHAIN_URL).pathname;
+  let lastGotoAt = Date.now();
   await page.goto(CHAIN_URL, { waitUntil: 'domcontentloaded' });
+  await passCaptcha(page, 'chain');
   await page.waitForTimeout(2500);
 
   await page.mouse.move(210, 400); // cursor over the left list panel
@@ -86,6 +207,16 @@ async function discoverBranches(page: Page): Promise<Branch[]> {
   let lastCount = 0;
 
   for (let round = 0; round < 50; round++) {
+    // a solved captcha can land the browser off the chain page — while no
+    // cards are seen, come back and re-check (rate-limited to once per 5s)
+    if (found.size === 0 && Date.now() - lastGotoAt > 5000
+      && new URL(page.url()).pathname !== chainPathname) {
+      await page.goto(CHAIN_URL, { waitUntil: 'domcontentloaded' });
+      await passCaptcha(page, 'chain');
+      await page.waitForTimeout(1500);
+      lastGotoAt = Date.now();
+    }
+
     await page.mouse.wheel(0, 800);
     await page.waitForTimeout(400);
 
@@ -207,17 +338,17 @@ async function switchSortToNewest(page: Page): Promise<boolean> {
 
 async function fetchBranchReviews(page: Page, branch: { orgId: string; reviewsUrl: string }, cutoff: Date): Promise<Review[]> {
   await page.goto(branch.reviewsUrl, { waitUntil: 'domcontentloaded' });
+  await passCaptcha(page, `branch ${branch.orgId}`);
 
   // if the sort control does not appear within 5s — skip the branch:
-  // that happens for places without reviews (nothing to sort) or on a captcha
+  // that happens for places without reviews (nothing to sort)
   const buttonReady = await page.locator('.rating-ranking-view').first()
     .waitFor({ state: 'visible', timeout: 5000 })
     .then(() => true)
     .catch(() => false);
   if (!buttonReady) {
-    await page.screenshot({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), `debug_fail_${branch.orgId}.png`) })
-      .catch(() => {});
-    throw new Error(`sort button did not appear within 5s — no reviews, captcha or changed markup (screenshot: debug_fail_${branch.orgId}.png)`);
+    const shot = await debugScreenshot(page, `debug_fail_${branch.orgId}`);
+    throw new Error(`sort button did not appear within 5s — no reviews or changed markup (screenshot: ${shot})`);
   }
 
   // let the app attach handlers: a click right after mount does not open the menu
@@ -225,10 +356,9 @@ async function fetchBranchReviews(page: Page, branch: { orgId: string; reviewsUr
 
   const sortClicked = await switchSortToNewest(page);
   if (!sortClicked) {
-    // save a screenshot to see what Yandex actually served (captcha/stub/new markup)
-    await page.screenshot({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), `debug_fail_${branch.orgId}.png`) })
-      .catch(() => {});
-    throw new Error(`sort menu did not open in 3 attempts (screenshot: debug_fail_${branch.orgId}.png)`);
+    // save a screenshot to see what Yandex actually served (stub/new markup)
+    const shot = await debugScreenshot(page, `debug_fail_${branch.orgId}`);
+    throw new Error(`sort menu did not open in 3 attempts (screenshot: ${shot})`);
   }
 
   // the review list is virtualized: old cards are removed from the DOM while
@@ -295,72 +425,80 @@ export interface ReviewsCollection {
 
 /**
  * Collects reviews for the last daysBack days (yesterday by default)
- * across all chain branches. Opens a visible browser (Yandex blocks headless).
+ * across all chain branches. Opens a visible browser (Yandex blocks headless)
+ * with a persistent profile: the Yandex cookies survive between runs, so a
+ * captcha solved once by hand keeps the next runs clean.
  * To also send the collected reviews by email use collectReviews()
  * from index.ts (one email for both platforms).
  */
 export async function collectYandexReviews(opts: ReportOptions = {}): Promise<ReviewsCollection> {
   const daysBack = opts.daysBack ?? DEFAULT_DAYS_BACK;
   const cutoff = getCutoffDate(daysBack);
-  const browser: Browser = await chromium.launch({ headless: false });
-  const page = await browser.newPage({ locale: 'ru-RU', viewport: { width: 1440, height: 900 } });
+  const context: BrowserContext = await chromium.launchPersistentContext(PROFILE_DIR, {
+    headless: false,
+    locale: 'ru-RU',
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = context.pages()[0] ?? await context.newPage();
   // Yandex serves a "limited" stub to headless browsers — mask webdriver and run visible
-  await page.addInitScript(() => {
+  await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   });
 
-  console.log('Collecting the branch list from the chain page...');
-  const branches = await discoverBranches(page);
-  if (branches.length === 0) {
-    await browser.close();
-    throw new Error('no branches found — check YANDEX_CHAIN_URL and the list markup');
-  }
-  console.log(`   branches found: ${branches.length}`);
-  for (const b of branches) console.log(`   - ${b.name} (${b.orgId})`);
-
-  const results: BranchResult[] = [];
-  const failures: string[] = [];
-
-  for (const branch of branches) {
-    console.log(`Collecting reviews: ${branch.name}...`);
-    const branchResult: BranchResult = {
-      branch: branch.name,
-      orgId: branch.orgId,
-      reviewsCount: 0,
-      reviews: [],
-    };
-    results.push(branchResult);
-    try {
-      const reviews = await fetchBranchReviews(page, branch, cutoff);
-      branchResult.reviewsCount = reviews.length;
-      console.log(`   found for ${daysBack} d.: ${reviews.length}`);
-      for (const r of reviews) {
-        branchResult.reviews.push({
-          author: r.author,
-          rating: r.rating,
-          date: r.date ? r.date.toISOString() : '',
-          text: r.text,
-        });
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      failures.push(`${branch.name} (${branch.orgId}): ${msg}`);
-      console.error(`[!] Skipping "${branch.name}": ${msg}`);
+  try {
+    console.log('Collecting the branch list from the chain page...');
+    const branches = await discoverBranches(page);
+    if (branches.length === 0) {
+      const shot = await debugScreenshot(page, 'debug_fail_chain');
+      throw new Error(`no branches found on the chain page — captcha or changed markup (screenshot: ${shot}; check YANDEX_CHAIN_URL)`);
     }
+    console.log(`   branches found: ${branches.length}`);
+    for (const b of branches) console.log(`   - ${b.name} (${b.orgId})`);
+
+    const results: BranchResult[] = [];
+    const failures: string[] = [];
+
+    for (const branch of branches) {
+      console.log(`Collecting reviews: ${branch.name}...`);
+      const branchResult: BranchResult = {
+        branch: branch.name,
+        orgId: branch.orgId,
+        reviewsCount: 0,
+        reviews: [],
+      };
+      results.push(branchResult);
+      try {
+        const reviews = await fetchBranchReviews(page, branch, cutoff);
+        branchResult.reviewsCount = reviews.length;
+        console.log(`   found for ${daysBack} d.: ${reviews.length}`);
+        for (const r of reviews) {
+          branchResult.reviews.push({
+            author: r.author,
+            rating: r.rating,
+            date: r.date ? r.date.toISOString() : '',
+            text: r.text,
+          });
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failures.push(`${branch.name} (${branch.orgId}): ${msg}`);
+        console.error(`[!] Skipping "${branch.name}": ${msg}`);
+      }
+    }
+
+    // skipped branches summary — big and visible, easy to spot in logs
+    if (failures.length > 0) {
+      console.error('\n' + '='.repeat(60));
+      console.error(`SKIPPED BRANCHES (${failures.length} of ${results.length}):`);
+      for (const f of failures) console.error(`   x ${f}`);
+      console.error('='.repeat(60) + '\n');
+    }
+
+    const total = results.reduce((sum, b) => sum + b.reviewsCount, 0);
+    return { total, branches: results, failures };
+  } finally {
+    await context.close();
   }
-
-  await browser.close();
-
-  // skipped branches summary — big and visible, easy to spot in logs
-  if (failures.length > 0) {
-    console.error('\n' + '='.repeat(60));
-    console.error(`SKIPPED BRANCHES (${failures.length} of ${results.length}):`);
-    for (const f of failures) console.error(`   x ${f}`);
-    console.error('='.repeat(60) + '\n');
-  }
-
-  const total = results.reduce((sum, b) => sum + b.reviewsCount, 0);
-  return { total, branches: results, failures };
 }
 
 async function main(): Promise<void> {

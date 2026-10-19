@@ -6,6 +6,9 @@
  *   SMTP_HOST / SMTP_PORT — your email provider's SMTP server and port
  *   SMTP_USER / SMTP_PASS — sender mailbox login and APP PASSWORD
  *   MAIL_TO               — recipient address(es), comma-separated
+ *   MAIL_ERRORS_TO        — optional: recipient(s) for PARTIAL reports
+ *                          (a platform failed) — the developer only;
+ *                          without it partial reports go to MAIL_TO
  * The language and brand of the email come from the call options
  * (lang: 'ru' | 'en', brand: string).
  * If mail is not configured the email is skipped with a warning;
@@ -27,7 +30,7 @@ export interface DailyReport {
     showOrg: number;
     events: Record<string, number>;
   };
-  reviews: {
+  reviews?: {
     total: number;
     branches: {
       branch: string;
@@ -72,6 +75,9 @@ const LABELS: Record<ReportLanguage, {
   reviewsYandex: (n: number) => string;
   reviewsGoogle: (n: number) => string;
   noReviews: string;
+  yandexFailed: string;
+  googleFailed: string;
+  errorSubjectPrefix: string;
   generated: (dt: string) => string;
   for: (d: string) => string;
   fromTo: (a: string, b: string) => string;
@@ -93,6 +99,9 @@ const LABELS: Record<ReportLanguage, {
     reviewsYandex: (n) => `New reviews — Yandex (${n})`,
     reviewsGoogle: (n) => `New reviews — Google (${n})`,
     noReviews: 'No new reviews for this period.',
+    yandexFailed: '⚠ Yandex reviews were not collected (collection failed — often the Yandex captcha) — check the run logs.',
+    googleFailed: '⚠ Google reviews were not collected (collection failed) — check the run logs.',
+    errorSubjectPrefix: '⚠ Partial report (collection failed): ',
     generated: (dt) => `Generated automatically: ${dt}`,
     for: (d) => `for ${d}`,
     fromTo: (a, b) => `from ${a} to ${b}`,
@@ -114,6 +123,9 @@ const LABELS: Record<ReportLanguage, {
     reviewsYandex: (n) => `Новые отзывы — Яндекс (${n})`,
     reviewsGoogle: (n) => `Новые отзывы — Google (${n})`,
     noReviews: 'Новых отзывов за этот период нет.',
+    yandexFailed: '⚠ Отзывы Яндекс не собраны (сбой сбора — чаще всего капча Яндекса) — проверьте логи запуска.',
+    googleFailed: '⚠ Отзывы Google не собраны (сбой сбора) — проверьте логи запуска.',
+    errorSubjectPrefix: '⚠ Частичный отчёт (сбой сбора): ',
     generated: (dt) => `Сформировано автоматически: ${dt}`,
     for: (d) => `за ${d}`,
     fromTo: (a, b) => `с ${a} по ${b}`,
@@ -253,8 +265,9 @@ function buildHtml(report: DailyReport, lang: ReportLanguage): string {
     ])}`
     : '';
 
-  const reviewsHtml =
-    reviews.total === 0
+  const reviewsHtml = !reviews
+    ? `<p style="color:#b00;">${l.yandexFailed}</p>`
+    : reviews.total === 0
       ? `<p style="color:#666;">${l.noReviews}</p>`
       : buildReviewsTable(reviews.branches);
 
@@ -270,33 +283,53 @@ function buildHtml(report: DailyReport, lang: ReportLanguage): string {
     ${table}`;
   }
 
+  const reviewsHeaderHtml = reviews
+    ? `\n    <h3 style="margin:28px 0 10px;">${l.reviewsYandex(reviews.total)}</h3>`
+    : '';
+
   return `
   <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#1a1a2e;">
     <p style="margin:0 0 6px;font-size:13px;color:#888;">${l.yandex}</p>
     <table style="border-collapse:collapse;width:100%;"><tr>${cardsYandex}</tr></table>
-    ${googleCardsHtml}
-    <h3 style="margin:28px 0 10px;">${l.reviewsYandex(reviews.total)}</h3>
+    ${googleCardsHtml}${reviewsHeaderHtml}
     ${reviewsHtml}
     ${googleHtml}
     <p style="color:#bbb;font-size:12px;margin-top:28px;">${l.generated(formatDateTimeLocal(report.generatedAt))}</p>
   </div>`;
 }
 
+/** Google env credentials are present — a missing Google section in a report then means a real collection failure, not "not configured" */
+function googleConfigured(): boolean {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_REFRESH_TOKEN);
+}
+
 /**
  * Sends the report to every recipient from MAIL_TO as a separate email
- * (each recipient sees only themselves in "To").
+ * (each recipient sees only themselves in "To"). A partial report (the
+ * Yandex reviews section missing, or a configured Google side failed)
+ * goes to MAIL_ERRORS_TO only, with a failure prefix in the subject.
  * Language and brand come from the call options.
  */
 export async function sendReportEmail(report: DailyReport, opts: ReportOptions = {}): Promise<void> {
   const lang = opts.lang ?? DEFAULT_LANG;
+  const l = LABELS[lang];
   const subject = buildSubject(DEFAULT_BRAND[lang], opts.brand, report, lang);
-  await dispatchEmail(subject, buildHtml(report, lang), opts.brand ?? DEFAULT_BRAND[lang]);
+  const partial = !report.reviews || (googleConfigured() && (!report.google || !report.reviewsGoogle));
+  await dispatchEmail(
+    (partial ? l.errorSubjectPrefix : '') + subject,
+    buildHtml(report, lang),
+    opts.brand ?? DEFAULT_BRAND[lang],
+    partial,
+  );
 }
 
 /** Sections of a reviews-only email: a Yandex and/or Google collection. */
 export interface ReviewsEmailSections {
   reviews?: DailyReport['reviews'];
   reviewsGoogle?: DailyReport['reviewsGoogle'];
+  /** true — the side failed to collect: the email shows a warning line instead */
+  yandexFailed?: boolean;
+  googleFailed?: boolean;
 }
 
 /** HTML of the reviews-only email: just the review sections, no metric cards. */
@@ -308,13 +341,20 @@ function buildReviewsOnlyHtml(sections: ReviewsEmailSections, lang: ReportLangua
       ? `<p style="color:#666;">${l.noReviews}</p>`
       : buildReviewsTable(branches.branches);
 
+  const warnHtml = (text: string, top: boolean) =>
+    `<p style="margin:${top ? '28px' : '0'} 0 10px;color:#b00;">${text}</p>`;
+
   // the first present section sits flush at the top, the next one is spaced
   const yandexHtml = sections.reviews
     ? `<h3 style="margin:0 0 10px;">${l.reviewsYandex(sections.reviews.total)}</h3>\n    ${sectionHtml(sections.reviews.total, sections.reviews)}`
-    : '';
+    : sections.yandexFailed
+      ? warnHtml(l.yandexFailed, false)
+      : '';
   const googleHtml = sections.reviewsGoogle
     ? `<h3 style="margin:${sections.reviews ? '28px' : '0'} 0 10px;">${l.reviewsGoogle(sections.reviewsGoogle.total)}</h3>\n    ${sectionHtml(sections.reviewsGoogle.total, sections.reviewsGoogle)}`
-    : '';
+    : sections.googleFailed
+      ? warnHtml(l.googleFailed, Boolean(sections.reviews || sections.yandexFailed))
+      : '';
 
   return `
   <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;margin:0 auto;color:#1a1a2e;">
@@ -345,7 +385,14 @@ export async function sendReviewsEmail(sections: ReviewsEmailSections, opts: Rep
 
   const subject = buildSubject(LABELS[lang].reviewsReportWord, opts.brand, { date: iso(start), dateTo: iso(end) }, lang);
   const html = buildReviewsOnlyHtml(sections, lang, new Date().toISOString());
-  await dispatchEmail(subject, html, opts.brand ?? DEFAULT_BRAND[lang]);
+  // a failed side makes the report partial — it goes to the developer (MAIL_ERRORS_TO)
+  const partial = Boolean(sections.yandexFailed || sections.googleFailed);
+  await dispatchEmail(
+    (partial ? LABELS[lang].errorSubjectPrefix : '') + subject,
+    html,
+    opts.brand ?? DEFAULT_BRAND[lang],
+    partial,
+  );
 }
 
 /** Data of the metrics-only email: chain totals plus a per-branch breakdown. */
@@ -418,29 +465,46 @@ function buildMetricsHtml(report: MetricsEmailReport, lang: ReportLanguage): str
 /**
  * Sends the metrics-only email (subject 'Metrics report ...' / 'Отчёт по
  * метрикам ...') — chain totals as cards plus the per-branch tables, no
- * reviews. Used by collectMetrics with sendEmail: true.
+ * reviews. Used by collectMetrics with sendEmail: true. A configured but
+ * failed Google side makes the report partial — it goes to the developer
+ * (MAIL_ERRORS_TO) with a failure prefix in the subject.
  */
 export async function sendMetricsEmail(report: MetricsEmailReport, opts: ReportOptions = {}): Promise<void> {
   const lang = opts.lang ?? DEFAULT_LANG;
   const subject = buildSubject(LABELS[lang].metricsReportWord, opts.brand, report, lang);
-  await dispatchEmail(subject, buildMetricsHtml(report, lang), opts.brand ?? DEFAULT_BRAND[lang]);
+  const partial = googleConfigured() && !report.google;
+  await dispatchEmail(
+    (partial ? LABELS[lang].errorSubjectPrefix : '') + subject,
+    buildMetricsHtml(report, lang),
+    opts.brand ?? DEFAULT_BRAND[lang],
+    partial,
+  );
 }
 
 /**
  * Shared delivery of both report kinds: a separate email per recipient
  * (each one sees only themselves in "To"). Skipped with a warning when
  * mail is not configured — collection is not considered failed.
+ * errorsOnly — the report is partial (a platform failed): the recipients
+ * come from MAIL_ERRORS_TO (the developer) instead of MAIL_TO, and the
+ * subject is prefixed as a failure. Without MAIL_ERRORS_TO the email
+ * falls back to MAIL_TO with a warning.
  */
-async function dispatchEmail(subject: string, html: string, brand: string): Promise<void> {
-  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_TO } = process.env;
+async function dispatchEmail(subject: string, html: string, brand: string, errorsOnly = false): Promise<void> {
+  const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_TO, MAIL_ERRORS_TO } = process.env;
 
-  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !MAIL_TO) {
-    console.warn('Mail is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS/MAIL_TO in .env) — email skipped');
+  const toList = errorsOnly && MAIL_ERRORS_TO ? MAIL_ERRORS_TO : MAIL_TO;
+  if (errorsOnly && !MAIL_ERRORS_TO) {
+    console.warn('MAIL_ERRORS_TO is not set — the partial (failure) report goes to MAIL_TO; set it to route failure emails to the developer only');
+  }
+
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !toList) {
+    console.warn(`Mail is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS/${errorsOnly ? 'MAIL_ERRORS_TO' : 'MAIL_TO'} in .env) — email skipped`);
     return;
   }
 
   // multiple recipients allowed, comma-separated: a@mail.com, b@gmail.com
-  const recipients = MAIL_TO.split(',').map((s) => s.trim()).filter(Boolean);
+  const recipients = toList.split(',').map((s) => s.trim()).filter(Boolean);
 
   const transporter = nodemailer.createTransport({
     host: SMTP_HOST,

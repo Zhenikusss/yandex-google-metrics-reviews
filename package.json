@@ -1,6 +1,6 @@
 {
   "name": "yandex-google-metrics-reviews",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Chain metrics and reviews from Yandex Maps and Google Maps — daily, weekly and monthly reports in one call (JSON + email)",
   "type": "module",
   "main": "dist/index.js",
@@ -16,6 +16,7 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.png",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",

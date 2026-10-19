@@ -19,8 +19,11 @@ or a reviews-only email — all from one library.
 - **Report emails** to every recipient (a separate email each): the full
   report, the metrics-only report or the reviews-only report — with the
   same data in the JSON files
-- **Failures are isolated:** a Google failure never breaks the Yandex
-  part — the report is sent with what was collected
+- **Failures are isolated:** a failure of either side (Yandex or Google)
+  never breaks the other — the report is sent with what was collected,
+  plus a warning line about the missing side; such partial reports go to
+  `MAIL_ERRORS_TO` (the developer) instead of `MAIL_TO`, with a failure
+  prefix in the subject
 
 ## Install
 
@@ -128,6 +131,14 @@ google-parser/
   reviews are scraped from the map pages in a visible browser (Yandex
   serves a "limited" stub to headless ones). A browser window opens —
   that is expected.
+- **Yandex captcha:** on the first Maps visit Yandex serves an antibot
+  captcha (and to datacenter/CI IPs — permanently). It is a plain
+  checkbox: the collector ticks it automatically with a real (trusted)
+  mouse click, retrying until the challenge clears (up to
+  `YANDEX_CAPTCHA_WAIT_MS`, default 120s); on a timeout it fails with a
+  `debug_captcha.png` screenshot saved into the working directory.
+  The browser runs with a persistent profile (`YANDEX_PROFILE_DIR`), so
+  the clearance cookies survive between runs.
 - **Google:** both metrics and reviews via official APIs with a refresh
   token. Metrics are fetched per location and summed (each location's row
   is kept for the per-branch table). The location list is live: a newly
@@ -152,6 +163,8 @@ next to your code (see `.env.example`).
 | `YANDEX_METRIKA_TOKEN` | OAuth token with Metrika API access | id.yandex.ru -> Security |
 | `YANDEX_COUNTER_ID` | Metrika counter id linked to the organization card | metrica.yandex.ru -> counter list |
 | `YANDEX_CHAIN_URL` | your chain page URL on Yandex Maps — the source of the branch list | open your chain on Yandex Maps and copy the page address |
+| `YANDEX_PROFILE_DIR` | optional: browser profile dir of the reviews scraper — the captcha clearance cookies persist between runs | any local dir; default `.yandex-profile` in the working directory (add it to `.gitignore`) |
+| `YANDEX_CAPTCHA_WAIT_MS` | optional: how long to keep retrying the automatic captcha checkbox tick, ms (a human can solve it in the opened window meanwhile); `0` — fail immediately | default `120000` |
 
 ### Yandex page locale
 
@@ -186,6 +199,7 @@ application (approved by Google).
 | `SMTP_USER` | sender mailbox, full address | your email address |
 | `SMTP_PASS` | app password (NOT the main mailbox password) | Yandex: id.yandex.ru -> Security -> App passwords; Gmail: myaccount.google.com/apppasswords (2FA required) |
 | `MAIL_TO` | recipients, comma-separated | each gets a separate email; recipients do not see each other |
+| `MAIL_ERRORS_TO` | optional: recipients for PARTIAL reports — when a platform failed to collect | the developer's address; without it partial reports fall back to `MAIL_TO` (with a warning in the logs) |
 
 ### Branch names
 
@@ -210,7 +224,12 @@ scheduler. Typical cadence: the full report every morning,
 calendar and gives the same result on any day of the month.
 
 Note: the Yandex reviews part needs a visible browser, so schedule it
-in a user session (not a headless service).
+in a user session (not a headless service). This is not only about the
+window: datacenter IPs (GitHub-hosted runners, most clouds) get the
+Yandex captcha on EVERY visit with nobody around to solve it — run the
+reviews part from a stable IP (an office/home machine or a self-hosted
+runner). The token-based parts (Yandex Metrika, everything Google) are
+IP-independent and CI-safe.
 
 ## License
 

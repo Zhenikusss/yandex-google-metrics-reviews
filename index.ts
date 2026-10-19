@@ -59,21 +59,29 @@ export type { ReportOptions, ReportLanguage, ReviewsOptions, MetricsOptions, Met
 export type { YandexBranchMetrics } from './yandex-parser/metrika.js';
 export type { GoogleBranchMetrics } from './google-parser/metrika.js';
 
-/** Result of collectReviews: both platforms, Google null when it failed. */
+/** Result of collectReviews: both platforms; a side is null when it failed. */
 export interface AllReviewsCollection {
-  yandex: ReviewsCollection;
+  /** null when the Yandex collection failed (captcha and the like — logged, does not break the run) */
+  yandex: ReviewsCollection | null;
   /** null when the Google collection failed (logged, does not break the run) */
   google: GoogleReviewsCollection | null;
 }
 
 /**
  * Reviews from BOTH platforms in one call: Yandex Maps (browser scraping)
- * and Google Maps (official API). A Google failure does not break the
- * Yandex part. With sendEmail: true sends ONE reviews-only email with
- * both sections together ("Reviews report ..." / "Отчёт по отзывам ...").
+ * and Google Maps (official API). A failure of either side does not break
+ * the other — the email goes out with what was collected (and a warning
+ * about the missing side); only a failure of BOTH throws.
+ * With sendEmail: true sends ONE reviews-only email with both sections
+ * together ("Reviews report ..." / "Отчёт по отзывам ...").
  */
 export async function collectReviews(opts: ReviewsOptions = {}): Promise<AllReviewsCollection> {
-  const yandex = await collectYandexReviews(opts);
+  let yandex: ReviewsCollection | null = null;
+  try {
+    yandex = await collectYandexReviews(opts);
+  } catch (e) {
+    console.error(`[Yandex] Collection failed, the reviews email will skip Yandex: ${e instanceof Error ? e.message : e}`);
+  }
 
   let google: GoogleReviewsCollection | null = null;
   try {
@@ -82,12 +90,18 @@ export async function collectReviews(opts: ReviewsOptions = {}): Promise<AllRevi
     console.error(`[Google] Collection failed, the reviews email will skip Google: ${e instanceof Error ? e.message : e}`);
   }
 
+  if (!yandex && !google) {
+    throw new Error('neither platform was collected — see the errors above');
+  }
+
   // one email with both platforms; without sendEmail — collect only
   if (opts.sendEmail) {
     await sendReviewsEmail(
       {
-        reviews: { total: yandex.total, branches: yandex.branches },
+        reviews: yandex ? { total: yandex.total, branches: yandex.branches } : undefined,
         reviewsGoogle: google ? { total: google.total, branches: google.branches } : undefined,
+        yandexFailed: !yandex,
+        googleFailed: !google,
       },
       opts,
     );
@@ -199,7 +213,8 @@ export async function collectMetrics(opts: MetricsOptions = {}): Promise<Metrics
 
 /**
  * Full run: all sources -> daily_report.json -> email.
- * Failures of the Google sources do not break the Yandex part of the report.
+ * A failure of any secondary source (Google, Yandex reviews) does not
+ * break the report: the email goes out with what was collected.
  */
 export async function runReport(opts: ReportOptions = {}): Promise<Record<string, unknown>> {
   console.log('========================================');
@@ -221,10 +236,15 @@ export async function runReport(opts: ReportOptions = {}): Promise<Record<string
     console.error(`[Google] Metrics not collected, the report will skip them: ${e instanceof Error ? e.message : e}\n`);
   }
 
-  // 3. Yandex reviews
+  // 3. Yandex reviews (a captcha/scrape failure must not break the report)
   console.log('[3/4] Collecting Yandex Maps reviews...');
-  const reviews = await collectYandexReviews(opts);
-  console.log(`   total reviews: ${reviews.total}\n`);
+  let reviews: ReviewsCollection | null = null;
+  try {
+    reviews = await collectYandexReviews(opts);
+    console.log(`   total reviews: ${reviews.total}\n`);
+  } catch (e) {
+    console.error(`[Yandex] Collection failed, the report will skip the Yandex reviews: ${e instanceof Error ? e.message : e}\n`);
+  }
 
   // 4. Google reviews (a failure must not break the report)
   console.log('[4/4] Collecting Google Maps reviews...');
@@ -242,11 +262,13 @@ export async function runReport(opts: ReportOptions = {}): Promise<Record<string
     dateTo: metrika.dateTo,
     generatedAt: new Date().toISOString(),
     metrika,
-    reviews: {
+  };
+  if (reviews) {
+    report.reviews = {
       total: reviews.total,
       branches: reviews.branches,
-    },
-  };
+    };
+  }
   if (googleStats) report.google = googleStats;
   if (googleReviews) {
     report.reviewsGoogle = {
