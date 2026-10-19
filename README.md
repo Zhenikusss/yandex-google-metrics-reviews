@@ -31,11 +31,7 @@ or a reviews-only email — all from one library.
 npm install yandex-google-metrics-reviews
 ```
 
-Yandex reviews use Playwright — install the browser on first run:
-
-```bash
-npx playwright install chromium
-```
+No browser or extra binaries needed — the Yandex collector is plain HTTP.
 
 ## Library usage
 
@@ -70,7 +66,7 @@ await collectReviews({ daysBack: 1, sendEmail: true, lang: 'ru' });
 // per-platform collectors without emails:
 const metrika = await getYandexStats({ daysBack: 3 });   // MetrikaDaily (+ .branches)
 const google = await getGoogleStats({ daysBack: 3 });    // GoogleStats (+ .branches)
-const yr = await collectYandexReviews({ daysBack: 1 });  // opens a visible browser
+const yr = await collectYandexReviews({ daysBack: 1 });  // plain HTTP, no browser
 const gr = await collectGoogleReviews({ daysBack: 1 });
 ```
 
@@ -116,7 +112,7 @@ branches.json               branch names: Google/Yandex address -> report name
 mailer.ts                   HTML emails: full, reviews-only, metrics-only
 yandex-parser/
   metrika.ts                Yandex Metrika metrics, totals + per branch (API)
-  reviews.ts                Yandex Maps reviews (page scraping via Playwright)
+  reviews.ts                Yandex Maps reviews (the internal maps API)
 google-parser/
   auth.ts                   Google OAuth token + the account location list
   metrika.ts                Google Business Profile metrics, totals + per branch
@@ -127,18 +123,14 @@ google-parser/
 
 - **Yandex:** metrics via the official Metrika API (the counter linked to
   the organization card; per-branch breakdown — the
-  `ym:s:vacuumOrganization` dimension). Yandex has no reviews API, so
-  reviews are scraped from the map pages in a visible browser (Yandex
-  serves a "limited" stub to headless ones). A browser window opens —
-  that is expected.
-- **Yandex captcha:** on the first Maps visit Yandex serves an antibot
-  captcha (and to datacenter/CI IPs — permanently). It is a plain
-  checkbox: the collector ticks it automatically with a real (trusted)
-  mouse click, retrying until the challenge clears (up to
-  `YANDEX_CAPTCHA_WAIT_MS`, default 120s); on a timeout it fails with a
-  `debug_captcha.png` screenshot saved into the working directory.
-  The browser runs with a persistent profile (`YANDEX_PROFILE_DIR`), so
-  the clearance cookies survive between runs.
+  `ym:s:vacuumOrganization` dimension). Yandex has no public reviews API,
+  so reviews come from the same internal API the maps web app uses:
+  `GET /maps/api/business/fetchReviews` with `ranking=by_time` (true
+  newest-first) and pagination. The request signature and the session
+  ingredients (cookies, csrfToken, sessionId) are replicated from the
+  maps JS bundle — no browser, no captcha, works from any IP including
+  CI. Unofficial: if Yandex changes the signing, collection fails loudly
+  (per-branch errors in the logs) instead of returning wrong data.
 - **Google:** both metrics and reviews via official APIs with a refresh
   token. Metrics are fetched per location and summed (each location's row
   is kept for the per-branch table). The location list is live: a newly
@@ -162,9 +154,7 @@ next to your code (see `.env.example`).
 |---|---|---|
 | `YANDEX_METRIKA_TOKEN` | OAuth token with Metrika API access | id.yandex.ru -> Security |
 | `YANDEX_COUNTER_ID` | Metrika counter id linked to the organization card | metrica.yandex.ru -> counter list |
-| `YANDEX_CHAIN_URL` | your chain page URL on Yandex Maps — the source of the branch list | open your chain on Yandex Maps and copy the page address |
-| `YANDEX_PROFILE_DIR` | optional: browser profile dir of the reviews scraper — the captcha clearance cookies persist between runs | any local dir; default `.yandex-profile` in the working directory (add it to `.gitignore`) |
-| `YANDEX_CAPTCHA_WAIT_MS` | optional: how long to keep retrying the automatic captcha checkbox tick, ms (a human can solve it in the opened window meanwhile); `0` — fail immediately | default `120000` |
+| `YANDEX_CHAIN_URL` | your chain page URL on Yandex Maps — picks up new branches automatically | open your chain on Yandex Maps and copy the page address |
 
 ### Yandex page locale
 
@@ -223,13 +213,7 @@ scheduler. Typical cadence: the full report every morning,
 `daysBack: 'month'` on the 1st — the month period is anchored to the
 calendar and gives the same result on any day of the month.
 
-Note: the Yandex reviews part needs a visible browser, so schedule it
-in a user session (not a headless service). This is not only about the
-window: datacenter IPs (GitHub-hosted runners, most clouds) get the
-Yandex captcha on EVERY visit with nobody around to solve it — run the
-reviews part from a stable IP (an office/home machine or a self-hosted
-runner). The token-based parts (Yandex Metrika, everything Google) are
-IP-independent and CI-safe.
+The collector is plain HTTP and runs anywhere — CI included.
 
 ## License
 

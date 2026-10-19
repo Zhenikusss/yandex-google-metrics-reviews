@@ -1,6 +1,6 @@
 {
   "name": "yandex-google-metrics-reviews",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Chain metrics and reviews from Yandex Maps and Google Maps — daily, weekly and monthly reports in one call (JSON + email)",
   "type": "module",
   "main": "dist/index.js",
@@ -46,8 +46,7 @@
   "dependencies": {
     "axios": "^1.19.0",
     "dotenv": "^17.4.2",
-    "nodemailer": "^10.0.3",
-    "playwright": "^1.62.1"
+    "nodemailer": "^10.0.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

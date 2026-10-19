@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0] — 2026-10-19
+
+Yandex reviews without a browser, without a captcha — one single path.
+
+### Changed
+
+- **The Yandex reviews collector is now plain HTTP only.** It calls the
+  same internal API the maps web app uses —
+  `GET /maps/api/business/fetchReviews?ranking=by_time` — newest first,
+  full pagination, from any IP (CI included). The request signature
+  (`s` = djb2-xor of the qs-serialized, case-insensitively sorted query)
+  and the session ingredients (page cookies, csrfToken, sessionId) are
+  replicated from the maps JS bundle; a csrf-refresh response is retried
+  with the fresh token. The browser scraper (Playwright, captcha
+  auto-tick, persistent profile), the SSR-HTML fallback and all their
+  env knobs (`YANDEX_REVIEWS_MODE`, `YANDEX_PROFILE_DIR`,
+  `YANDEX_CAPTCHA_WAIT_MS`) are **removed** — so is the `playwright`
+  dependency.
+- The branch list is discovered automatically: the chain page state
+  contains every organization of the chain (address + orgId) in one
+  plain-HTTP request — no manual list to maintain.
+
+### Caveat
+
+The API is unofficial — if Yandex changes the signing algorithm,
+collection fails loudly (per-branch errors, empty sections) rather than
+returning incomplete data silently.
+
 ## [0.3.0] — 2026-10-19
 
 Yandex started serving an antibot captcha on the first Maps visit (and to
